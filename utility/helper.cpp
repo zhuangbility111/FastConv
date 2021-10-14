@@ -16,33 +16,33 @@
 
 #include <stdio.h>
 #include <stdio.h>
-#include <arm_neon.h>
+// #include <arm_neon.h>
 #include <math.h>
 
-void print_vec2(float32x4_t* vp)
-{
-    float* ep = (float *) vp;
-    printf("input %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
-}
+// void print_vec2(float32x4_t* vp)
+// {
+//     float* ep = (float *) vp;
+//     printf("input %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+// }
 
-void print_vec3(float32x4_t* vp)
-{
-    float* ep = (float *) vp;
-    printf("transformed %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
-}
+// void print_vec3(float32x4_t* vp)
+// {
+//     float* ep = (float *) vp;
+//     printf("transformed %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+// }
 
-void print_vec(float32x4_t* vp, const char* comment)
-{
-    float* ep = (float *) vp;
-    printf("%s %.3f, %.3f, %.3f, %.3f\n", comment, *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
-}
+// void print_vec(float32x4_t* vp, const char* comment)
+// {
+//     float* ep = (float *) vp;
+//     printf("%s %.3f, %.3f, %.3f, %.3f\n", comment, *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+// }
 
 
-void print_vec(float32x4_t* vp)
-{
-    float* ep = (float *) vp;
-    printf("vec %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
-}
+// void print_vec(float32x4_t* vp)
+// {
+//     float* ep = (float *) vp;
+//     printf("vec %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+// }
 
 void print_arr(float* vp)
 {
@@ -84,7 +84,7 @@ float diff(float* arr1, float* arr2, int len)
             num ++; 
         }
     }
-    LOGD("The difference is %.5f\n", num==0?0:dif/num);
+    printf("The difference is %.5f\n", num==0?0:dif/num);
     return num==0?0:dif/num;
 }
 float diff(float* arr1, float* arr2, int M, int N)
@@ -100,11 +100,11 @@ float diff(float* arr1, float* arr2, int M, int N)
             {
                 dif += err;
                 num ++;
-                LOGD("Error position (%d, %d), value %.4f, %.4f\n", i, j, arr1[i * N + j], arr2[i * N + j]);
+                printf("Error position (%d, %d), value %.4f, %.4f\n", i, j, arr1[i * N + j], arr2[i * N + j]);
             }
         }
     }
-    LOGD("The difference is %.5f\n", num==0?0:dif/num);
+    printf("The difference is %.5f\n", num==0?0:dif/num);
     return num==0?0:dif/num;
 }
 
@@ -123,14 +123,14 @@ void Timer::accumBench()
 
 void Timer::printBench(const char* comment, int fold)
 {
-    LOGD("%s %lfms\n", comment, accumulate / fold);
+    printf("%s %lfms\n", comment, accumulate / fold);
 }
 
 void Timer::endBench(const char* comment)
 {
     clock_gettime(CLOCK_MONOTONIC, &stop);
     double elapsedTime = (stop.tv_sec - start.tv_sec) * 1000.0 + (stop.tv_nsec - start.tv_nsec) / 1000000.0;
-    LOGD("%s %lfms\n", comment, elapsedTime);
+    printf("%s %lfms\n", comment, elapsedTime);
 }
 
 double Timer::endBench(double fold)
@@ -145,4 +145,8 @@ void Timer::endBench(const char* comment, double fold)
     clock_gettime(CLOCK_MONOTONIC, &stop);
     double elapsedTime = (stop.tv_sec - start.tv_sec) * 1000.0 + (stop.tv_nsec - start.tv_nsec) / 1000000.0;
     printf("%s time: %lfms\n", comment, elapsedTime / fold);
+}
+
+double Timer::getBench(int fold) {
+    return this->accumulate / (double)fold;
 }

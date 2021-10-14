@@ -3,14 +3,13 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
-#include <arm_neon.h>
-#include "./winoF63/winoF63.h"
+// #include "./winoF63/winoF63.h"
 #include <math.h>
 #include "./conv_layer.h"
 #include "./ncnn/ConvKernels.h"
 #include "./convLayer/naiveConv.h"
 #include "./convLayer/naiveNCNNConv.h"
-#include "./convLayer/winoF63Conv.h"
+// #include "./convLayer/winoF63Conv.h"
 #include "./convLayer/im2colConv.h"
 #include "./convLayer/winoF63ConvZC.h"
 #include "./utility/helper.h"
@@ -338,7 +337,8 @@ int main(int argc, char* argv[]){
 	const size_t input_channels = options.input_channels;
 	const size_t output_channels = options.output_channels;
 	const struct nnp_padding input_padding = { options.input_padding, options.input_padding, options.input_padding, options.input_padding };
-	const struct nnp_size input_size = options.input_size;
+//	const struct nnp_size input_size = options.input_size;
+	const struct nnp_size input_size = {options.input_size.height, options.input_size.width};
 	const struct nnp_size kernel_size = options.kernel_size;
 	const struct nnp_size output_subsampling = options.output_subsampling;
 	const struct nnp_size output_size = {
@@ -357,8 +357,8 @@ int main(int argc, char* argv[]){
     fillTestInput(test_input, input_channels, input_size);
     fillTestKernel(test_kernel, input_channels, output_channels, kernel_size);
 
-	ConvNaiveLayer conv_reference(test_input, test_kernel, NULL, NULL, input_channels, input_size.height, input_size.width, output_channels);
-    conv_reference.Forward();
+	// ConvNaiveLayer conv_reference(test_input, test_kernel, NULL, NULL, input_channels, input_size.height, input_size.width, output_channels);
+    // conv_reference.Forward();
 
 	ConvLayer* conv_test;
 
@@ -397,17 +397,17 @@ int main(int argc, char* argv[]){
 			// 								input_padding.left, input_padding.right, input_padding.top, input_padding.bottom,
 			// 								1, false,
 			// 								options.threads, options.iterations);
-			ConvWinoF63ZCLayer conv(test_input, test_kernel, NULL, conv_reference.output_data,
-									input_channels, input_size.height, input_size.width, output_channels,
-									kernel_size.height, kernel_size.width, output_subsampling.height, output_subsampling.width,
-									input_padding.left, input_padding.right, input_padding.top, input_padding.bottom,
-									1, false,
-									options.threads, options.iterations);
+			// ConvWinoF63ZCLayer conv(test_input, test_kernel, NULL, conv_reference.output_data,
+			// 						input_channels, input_size.height, input_size.width, output_channels,
+			// 						kernel_size.height, kernel_size.width, output_subsampling.height, output_subsampling.width,
+			// 						input_padding.left, input_padding.right, input_padding.top, input_padding.bottom,
+			// 						1, false,
+			// 						options.threads, options.iterations);
 									
-			if (options.tuning_strategy != nnp_convolution_tuning_strategy_no_tuning)	
-				conv.Tuning();
-			conv.Init();
-			conv.Forward();
+			// if (options.tuning_strategy != nnp_convolution_tuning_strategy_no_tuning)	
+			// 	conv.Tuning();
+			// conv.Init();
+			// conv.Forward();
 
 		} break;
 	}

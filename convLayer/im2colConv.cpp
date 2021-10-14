@@ -5,6 +5,7 @@
 #include <sys/stat.h> 
 #include <vector>
 #include <omp.h>
+#include "fj_tool/fapp.h"	// profiler header
 
 struct RegisterKernel {
     int row_batch;
@@ -14,23 +15,107 @@ struct RegisterKernel {
     RegisterKernel(int row, int col) : row_batch(row), col_batch(col) {}
 };
 
+ConvIm2colLayer::ConvIm2colLayer(float *input, float *kernel, float *biasw, float *output_ref,
+                size_t ic, size_t ih, size_t iw, size_t oc,
+                size_t kh, size_t kw, size_t sh, size_t sw, 
+                size_t pad_left, size_t pad_right, size_t pad_top, size_t pad_bottom,
+                size_t g, bool bias, size_t nt, size_t iter,
+                int mc, int nc, int kc, int gemm_version, int row_batch, int col_batch,
+                int pack_c_version, int mt_pack_b_version, int prefetch_a, int prefetch_b, int prefetch_c)
+                : ConvLayer(input, kernel, biasw, output_ref, ic, ih, iw, oc, kh, kw, sh, sw, pad_left, pad_right, pad_top, pad_bottom, g, bias, nt, iter),
+                mc(mc), nc(nc), kc(kc), row_batch(row_batch), col_batch(col_batch),
+                pack_c_version(pack_c_version), mt_pack_b_version(mt_pack_b_version), prefetch_a(prefetch_a), prefetch_b(prefetch_b), prefetch_c(prefetch_c) {
+    
+    this->M = output_channels;
+    this->N = output_height * output_width;
+    this->K = input_channels * kernel_height * kernel_width;
+    this->num_threads = num_threads;
+    // this->kernel_data = static_cast<float*>(realloc(this->kernel_data, sizeof(float) * M * K));
+    // this->transform_input_data = static_cast<float*>(malloc(sizeof(float) * output_height * output_width * input_channels * kernel_height * kernel_width));
+    // this->output_data = static_cast<float*>(realloc(this->output_data ,sizeof(float) * (output_height * output_width * output_channels + 128))); 
+    // memset(output_data, 0, sizeof(float) * (output_height * output_width * output_channels + 128));
+
+    // indicate M N K directly
+    // this->M = 128; this->N = 12544; this->K = 576;
+//    this->kernel_data = static_cast<float*>(realloc(this->kernel_data, sizeof(float) * M * K));
+//    this->transform_input_data = static_cast<float*>(malloc(sizeof(float) * N * K));
+//    this->output_data = static_cast<float*>(realloc(this->output_data, sizeof(float) * (M * N + 128))); 	
+    free(this->kernel_data);
+    free(this->output_data);
+    this->kernel_data = static_cast<float*>(_mm_malloc(sizeof(float) * M * K, 256));
+    this->transform_input_data = static_cast<float*>(_mm_malloc(sizeof(float) * N * K, 256));
+    this->output_data = static_cast<float*>(_mm_malloc(sizeof(float) * (M * N + 128), 256)); 	
+    
+    memset(output_data, 0, sizeof(float) * (M * N + 128));
+
+    if (this->num_threads > 1) {
+        this->gemm_version = GEMM_BLOCKS_MULTI_THREADS;
+    } else {
+        if (M <= 32 && N <= 32 && K <= 32)
+            this->gemm_version = GEMM_NO_BLOCKS;
+        else
+            this->gemm_version = GEMM_BLOCKS_SINGLE_THREAD;
+    }
+
+    // initialize data
+    this->im2col_v1();
+}
+
+ConvIm2colLayer::~ConvIm2colLayer() {
+    free(this->transform_input_data);
+}
+
 void ConvIm2colLayer::select_tuning_range_for_mnk(size_t &l1_bound, size_t &l2_bound,
                                                   int &mc_begin, int &mc_end, int &mc_step, 
                                                   int &nc_begin, int &nc_end, int &nc_step, 
                                                   int &kc_begin, int &kc_end, int &kc_step) {
-    mc_begin = 8;
-    mc_end   = 32 - 1;
-    mc_step  = 24;
     
-    kc_step  = this->col_batch;
-    kc_end   = ((size_t)(this->K * mc_begin) < l1_bound 
-                    ? align_ceil(this->K, kc_step) 
-                    : align_ceil(l1_bound/(size_t)mc_begin, kc_step));
-    kc_begin = align_ceil(kc_end/8, kc_step);
+    int max_tuning_num = 1024;
 
-    nc_step  = this->col_batch;
-    nc_end   = (this->N < 1024 ? align_ceil(this->N, this->col_batch) : 1024);
-    nc_begin = align_ceil(nc_end/8, nc_step);
+    // int mc_num = ((M < 128 ? M : 128) - 1) / row_batch + 1;
+    int mc_num = (M - 1) / row_batch + 1;
+    int nc_num = (N - 1) / col_batch + 1;
+    int kc_num = (K < 8 ? K : 8);
+
+    if(mc_num * nc_num > max_tuning_num)	{
+        //OC will be divided at most 64 parts.
+        if(mc_num >= 64)	          
+            mc_num = 64;	
+        //All the others will be used on tile
+        if(nc_num > max_tuning_num / mc_num)  
+            nc_num = max_tuning_num / mc_num; 
+    }
+
+    int M_step = (M - 1) / (row_batch * mc_num) + 1;
+    int N_step = (N - 1) / (col_batch * nc_num) + 1;
+    int K_step = (K - 1) / kc_num + 1;
+
+    mc_step = M_step * row_batch;
+    nc_step = N_step * col_batch;
+    kc_step = K_step;
+
+    mc_begin = M_step * row_batch;
+    mc_end   = M_step * row_batch * mc_num;
+
+    nc_begin = N_step * col_batch;
+    nc_end   = N_step * col_batch * nc_num;
+
+    kc_begin = K_step;
+    kc_end   = K_step * kc_num;
+
+    // mc_begin = 8;
+    // mc_end   = 32 - 1;
+    // mc_step  = 24;
+    
+    // kc_step  = this->col_batch;
+    // kc_end   = ((size_t)(this->K * mc_begin) < l1_bound 
+    //                 ? align_ceil(this->K, kc_step) 
+    //                 : align_ceil(l1_bound/(size_t)mc_begin, kc_step));
+    // kc_begin = align_ceil(kc_end/8, kc_step);
+
+    // nc_step  = this->col_batch;
+    // nc_end   = (this->N < 1024 ? align_ceil(this->N, this->col_batch) : 1024);
+    // nc_begin = align_ceil(nc_end/8, nc_step);
     
 }
 
@@ -102,15 +187,20 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
     printf("l2cache:%ubytes\n",(size_t)l2_cache_size_per_core);
 
     Timer timer;
-    int n_loop = 10;
+    int n_loop = 1;
     double elapsed_time;
     double best_time = static_cast<double>(INT64_MAX);
     RegisterKernel best_kernel;
 
     std::vector<RegisterKernel> kernels;
-    kernels.push_back(RegisterKernel(8, 8));
-    kernels.push_back(RegisterKernel(8, 12));
-    kernels.push_back(RegisterKernel(4, 16));
+    // kernels.push_back(RegisterKernel(8, 8));
+    // kernels.push_back(RegisterKernel(8, 12));
+    // kernels.push_back(RegisterKernel(4, 16));
+    kernels.push_back(RegisterKernel(12, 32));
+    // kernels.push_back(RegisterKernel(4, 64));
+    kernels.push_back(RegisterKernel(14, 32));
+    // kernels.push_back(RegisterKernel(10, 32));
+    // kernels.push_back(RegisterKernel(8, 32));
     int mc_begin, mc_end, mc_step, nc_begin, nc_end, nc_step, kc_begin, kc_end, kc_step;
     int pc_begin, pc_end, pc_step, pb_begin, pb_end, pb_step;
     int pre_a_begin, pre_a_end, pre_a_step, pre_b_begin, pre_b_end, pre_b_step, pre_c_begin, pre_c_end, pre_c_step;
@@ -141,10 +231,12 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
         for (int m = mc_begin; m <= mc_end; m += mc_step) {
             for (int n = nc_begin; n <= nc_end; n += nc_step) {
                 for (int k = kc_begin; k <= kc_end; k += kc_step) {
-                    if ((size_t)(m * k) > l1_bound || (size_t)(k * n) > l2_bound) {
-                        cur_round += (kc_end - k) / kc_step + 1;
-                        break;
-                    }
+//                    if ((size_t)(m * k) > l1_bound || (size_t)(k * n) > l2_bound) {
+//                        cur_round += (kc_end - k) / kc_step + 1;
+//                        break;
+//                    }
+					if (n > this->N)
+						break;
                     cur_round++;
 		    if (cur_round == total_round) {
                         printf("==============================\n");
@@ -163,6 +255,7 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
                                         this->mc = m; 
                                         this->nc = n; 
                                         this->kc = k;
+										printf("mc = %d, nc = %d, kc = %d\n", this->mc, this->nc, this->kc);
                                         this->pack_c_version = pc_version; 
                                         this->mt_pack_b_version = pb_version;
                                         this->prefetch_a = pre_a;
@@ -170,10 +263,23 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
                                         this->prefetch_c = pre_c;
                                         
                                         this->Init();
+                                        this->im2col_v1();
+                                        int warmup_loop = 5;
+                                        for (int i = 0; i < warmup_loop; i++) {
+                                            // this->im2col_v1();
+                                            this->sgemm();
+                                        }
+
                                         timer.startBench();
                                         for (int i = 0; i < n_loop; i++) 
                                             this->Forward();
                                         elapsed_time = timer.endBench(n_loop);
+
+                                        // this->Init();
+                                        // timer.startBench();
+                                        // for (int i = 0; i < n_loop; i++) 
+                                        //     this->Forward();
+                                        // elapsed_time = timer.endBench(n_loop);
                                         if (elapsed_time < best_time) {
                                             best_time = elapsed_time;
                                             printf("update best time: %fms\n", best_time);
@@ -228,21 +334,47 @@ int ConvIm2colLayer::Init() {
     this->set_pack_c();
     this->set_unpack_c();
     this->set_inner_kernel();
-    this->set_inner_kernel_for_corner(output_channels % row_batch);
+    this->set_inner_kernel_for_corner(this->M % row_batch);
     if (gemm_version == GEMM_BLOCKS_MULTI_THREADS)
         this->set_pack_b_mt();
     return 1;
+}
+
+void fill_test_data(float* input, int M, int N) {
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            input[i*N + j] = 256 *rand() / double(RAND_MAX);
+        }
+    }
+}
+
+void printf_matrix(float* res, int M, int N) {
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            printf("%.4f ", res[i * N + j]);
+        }
+        printf("\n");
+    }
 }
 
 int ConvIm2colLayer::Forward() {
     Timer im2col_profiler;
     Timer gemm_profiler;
     Timer total;
+
+    int warmup_loop = 5;
+    for (int i = 0; i < warmup_loop; i++) {
+        // this->im2col_v1();
+        this->sgemm();
+    }
+
+    memset(output_data, 0, sizeof(float) * (M * N + 32));
+
     for (int i = 0; i < iterations; i++) {
         total.startBench();
         im2col_profiler.startBench();
         // this->im2col();
-        this->im2col_v1();
+        // this->im2col_v1();
         im2col_profiler.accumBench();
 
         gemm_profiler.startBench();
@@ -254,6 +386,27 @@ int ConvIm2colLayer::Forward() {
     im2col_profiler.printBench("Im2colTran time:", iterations);
     gemm_profiler.printBench("Gemm time:", iterations);
     total.printBench("Total time:", iterations);
+
+    double gflops = (2.0 * this->M * this->N * this->K) / 1000000.0 / total.getBench(iterations);
+    double efficiency = gflops / 128.0 * 100.0;
+    printf("M = %d, N = %d, K = %d\n", this->M, this->N, this->K);
+    printf("Efficency: %lf \%, GFlops: %lf \n", efficiency, gflops);
+
+    // float *output_data_ref = new float[M * N + 32];
+    // memset(output_data_ref, 0, sizeof(float) * (M * N + 32));
+    // GEMM(kernel_data, transform_input_data, output_data_ref);
+    // if (output_data_ref != NULL)
+    //   float dis = diff(output_data_ref, output_data, this->M, this->N);
+	// delete [] output_data_ref;
+
+//    printf_matrix(output_data, M, N);
+//    printf("---------------\n");
+//    printf_matrix(output_data_ref, M, N);
+
+
+    // printf("c[0] = %f, c[1] = %f, c[2] = %f\n", output_data[0], output_data[1], output_data[2]);
+    // printf("c_ref[0] = %f, c_ref[1] = %f, c_ref[2] = %f\n", output_data_ref[0], output_data_ref[1], output_data_ref[2]);
+    
 
     return 1;
 }
@@ -309,76 +462,53 @@ void ConvIm2colLayer::im2col() {
 }
 
 void ConvIm2colLayer::im2col_v1() {
-    int padding_input_width  = input_width  + padding_left + padding_right;
-    int padding_input_height = input_height + padding_top  + padding_bottom;
-    int padding_input_size   = padding_input_height * padding_input_width;
-    int input_size = input_height * input_width;
+    // int padding_input_width  = input_width  + padding_left + padding_right;
+    // int padding_input_height = input_height + padding_top  + padding_bottom;
+    // int padding_input_size   = padding_input_height * padding_input_width;
+    // int input_size = input_height * input_width;
 
-    float* padding_input_data = static_cast<float*>(_mm_malloc(sizeof(float) * padding_input_size * input_channels, 64));
-    memset(padding_input_data, 0, sizeof(float) * padding_input_size * input_channels);
+    // float* padding_input_data = static_cast<float*>(_mm_malloc(sizeof(float) * padding_input_size * input_channels, 64));
+    // memset(padding_input_data, 0, sizeof(float) * padding_input_size * input_channels);
 
-    for (int ic = 0; ic < input_channels; ic++) {
-        float* padding_input_ptr = padding_input_data + ic * padding_input_size + padding_top * padding_input_width + padding_left;
-        float* input_ptr         = input_data + ic * input_size;
-        for (int row = 0; row < input_height; row++) {
-            memcpy(padding_input_ptr, input_ptr, sizeof(float) * input_width);
-            padding_input_ptr += padding_input_width;
-            input_ptr += input_width;
-        }
-    }
-    int transform_input_height = input_channels * kernel_height * kernel_width;
-    int transform_input_width  = output_height  * output_width;
-    int transform_input_size = transform_input_height * transform_input_width;
-    float* in, *in_ptr, *in_ptr_copy;
-    float* transform_in_ptr = transform_input_data;
-
-    // for (int i = 0; i < input_height; i++) {
-    //     for (int j = 0; j < input_width; j++) {
-    //         printf("%10.3f ", input_data[i * input_width + j]);
+    // for (int ic = 0; ic < input_channels; ic++) {
+    //     float* padding_input_ptr = padding_input_data + ic * padding_input_size + padding_top * padding_input_width + padding_left;
+    //     float* input_ptr         = input_data + ic * input_size;
+    //     for (int row = 0; row < input_height; row++) {
+    //         memcpy(padding_input_ptr, input_ptr, sizeof(float) * input_width);
+    //         padding_input_ptr += padding_input_width;
+    //         input_ptr += input_width;
     //     }
-    //     printf("\n");
     // }
+    // int transform_input_height = input_channels * kernel_height * kernel_width;
+    // int transform_input_width  = output_height  * output_width;
+    // int transform_input_size = transform_input_height * transform_input_width;
+    // float* in, *in_ptr, *in_ptr_copy;
+    // float* transform_in_ptr = transform_input_data;
 
-    // printf("---------------------");
-    // printf("\n");
 
-    // for (int i = 0; i < padding_input_height; i++) {
-    //     for (int j = 0; j < padding_input_width; j++) {
-    //         printf("%10.3f ", padding_input_data[i * padding_input_width + j]);
+    // int padding_width = padding_left + padding_right;
+    // int step = stride_height * padding_input_width;
+    // // input transform
+    // for (int ic = 0; ic < input_channels; ic++) {
+    //     in = padding_input_data + ic*padding_input_size;
+    //     for (int u = 0; u < kernel_height; u++) {
+    //         for (int v = 0; v < kernel_width; v++) {
+    //             in_ptr_copy = in + u*padding_input_width + v;
+    //             for (int i = 0; i < output_height; i++) {
+    //                 in_ptr = in_ptr_copy + i*step;
+    //                 for (int j = 0; j < output_width; j++) {
+    //                     *transform_in_ptr = *in_ptr;
+    //                     ++transform_in_ptr;
+    //                     in_ptr += stride_width;
+    //                 }
+    //             }
+    //         }
     //     }
-    //     printf("\n");
-    // } 
-
-    int padding_width = padding_left + padding_right;
-    int step = stride_height * padding_input_width;
-    // input transform
-    for (int ic = 0; ic < input_channels; ic++) {
-        in = padding_input_data + ic*padding_input_size;
-        for (int u = 0; u < kernel_height; u++) {
-            for (int v = 0; v < kernel_width; v++) {
-                in_ptr_copy = in + u*padding_input_width + v;
-                for (int i = 0; i < output_height; i++) {
-                    in_ptr = in_ptr_copy + i*step;
-                    for (int j = 0; j < output_width; j++) {
-                        *transform_in_ptr = *in_ptr;
-                        ++transform_in_ptr;
-                        in_ptr += stride_width;
-                    }
-                }
-            }
-        }
-    }
-    // printf("---------------------");
-    // printf("\n");
-
-    // for (int i = 0; i < transform_input_height; i++) {
-    //     for (int j = 0; j < transform_input_width; j++) {
-    //         printf("%10.3f ", transform_input_data[i * transform_input_width + j]);
-    //     }
-    //     printf("\n");
     // }
+    // _mm_free(padding_input_data);
 
-    _mm_free(padding_input_data);
+	fill_test_data(kernel_data, M, K);
+    fill_test_data(transform_input_data, K, N);
 }
 
 void ConvIm2colLayer::sgemm() {
@@ -388,7 +518,10 @@ void ConvIm2colLayer::sgemm() {
         break;
 
         case GEMM_BLOCKS_SINGLE_THREAD:
-            GEMM_v2(kernel_data, transform_input_data, output_data);
+            GEMM_v3(kernel_data, transform_input_data, output_data);
+            // GEMM_v2(kernel_data, transform_input_data, output_data);
+            // GEMM_v5_MNK(kernel_data, transform_input_data, output_data);
+
         break;
 
         case GEMM_BLOCKS_MULTI_THREADS:
@@ -407,13 +540,14 @@ void ConvIm2colLayer::GEMM(float* A, float* B, float* C) {
 
     // 这个版本虽然访存连续，但是矩阵B会被重复读取outputChannel次，增加了访存次数
     // 因此需要考虑分块，使矩阵中每一个块只需要被读一次，在访存连续的情况下，减少访存次数
+/*
    float* B_ptr;
    for (int k = 0; k < A_row; k++)
    {
        B_ptr = B;
        for (int i = 0; i < A_col; i++) 
        {
-           float temp = *(A + k*A_col + i);
+          float temp = *(A + k*A_col + i);
            for (int j = 0; j < B_col; j++)
            {
                *(C + k*C_col + j) += temp * *B_ptr;
@@ -421,14 +555,14 @@ void ConvIm2colLayer::GEMM(float* A, float* B, float* C) {
            }
        }
    }
-
-    // for(int i=0;i<A_row;i++){
-    //     for(int j=0;j<B_col;j++){
-    //         for(int k=0;k<A_col;k++){
-    //             *(C + i * C_col + j ) += *(A + i * A_col + k) * *(B + k * B_col + j);
-    //         }
-    //     }
-    // }
+*/
+    for(int i=0;i<A_row;i++){
+        for(int j=0;j<B_col;j++){
+            for(int k=0;k<A_col;k++){
+                *(C + i * C_col + j ) += *(A + i * A_col + k) * *(B + k * B_col + j);
+            }
+        }
+    }
 }
 
 void ConvIm2colLayer::GEMM_v2(float* A, float* B, float* C) {
@@ -529,7 +663,7 @@ void ConvIm2colLayer::GEMM_v2(float* A, float* B, float* C) {
                     for (int j = 0; j < nc_ceil; j += col_batch)
                     {
                         packC_ptr = packC_copy_copy + j * packC_ptr_step;
-                        this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, packC_col, prefetch_a, prefetch_b, this->prefetch_c);
+                        this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, packC_col, prefetch_a, prefetch_b, prefetch_c);
                         packB_ptr += step;
                     }
                 }
@@ -562,6 +696,190 @@ void ConvIm2colLayer::GEMM_v2(float* A, float* B, float* C) {
 
     _mm_free(packA);
     _mm_free(packB);
+}
+
+void ConvIm2colLayer::GEMM_v3(float* A, float* B, float* C) {
+    int lda = K;
+    int ldb = N;
+    int ldc = N;
+
+    Timer packA_timer;
+    Timer packB_timer;
+    Timer kernel_timer;
+
+    float *packA = static_cast<float*>(_mm_malloc((mc * kc + 64) * sizeof(float), 256)); 
+    float *packB = static_cast<float*>(_mm_malloc((kc * (align_ceil(N, col_batch)) + 64) * sizeof(float), 256));
+    float *packC = C;
+
+    assert((mc % row_batch == 0) && (nc % col_batch == 0));
+
+    // A中的一大整列M * kc，B中的一大整行kc * N
+    for (int kt = 0; kt < K; kt += kc) {
+        int kc_adjust = min(kc, K - kt);
+
+        for (int mt = 0; mt < M; mt += mc) {
+            int mc_adjust = min(mc, M - mt);
+            // float *packA_copy = packA + mt * kc;
+            float *packA_copy = packA;
+            packA_timer.startBench();
+            // 对A的一块做packing
+            this->pack_a(mc_adjust, kc_adjust, A + mt*lda + kt, lda, packA_copy, mc, kc, nc, row_batch, col_batch);
+            packA_timer.accumBench();
+            
+            for (int nt = 0; nt < N; nt += nc) {
+                int nc_adjust = min(nc, N - nt);
+                int nc_ceil = align_ceil(nc_adjust, col_batch);
+                float *packB_copy = packB + nt * kc;
+                // mt为0时才需要做pack
+                if (mt == 0) {
+                    packB_timer.startBench();
+                    // 对B的一大块kc * nc做packing
+                    this->pack_b(kc_adjust, nc_adjust, B + kt*ldb + nt, ldb, packB_copy, row_batch, col_batch);
+                    packB_timer.accumBench();
+                }
+
+                // 接着就是计算，对A的一块mc * kc和B的一块kc * nc进行计算
+                float *C_copy = C + mt * ldc + nt;
+
+                int remain_row_start = mc_adjust - mc_adjust % row_batch;
+                int packB_step = col_batch * kc_adjust;
+
+                kernel_timer.startBench();
+                // 计算可以整除的行
+                int i = 0;
+				// fapp_start("bar",1,0);
+                for (; i < remain_row_start; i += row_batch) {
+                    float *packA_ptr = packA_copy + i * kc_adjust;
+                    float *packB_ptr = packB_copy;
+                    float *packC_ptr_copy = C_copy + i * ldc;
+                    float *packC_ptr; 
+                    // 每次计算 col_batch 列。不足 col_batch 列的补0处理，因此也当成 col_batch 列进行计算
+                    for (int j = 0; j < nc_ceil; j += col_batch)
+                    {
+                        packC_ptr = packC_ptr_copy + j;
+                        this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, prefetch_a, prefetch_b, this->prefetch_c);
+                        packB_ptr += packB_step;
+                    }
+                }
+				// fapp_stop("bar",1,0);
+
+                // 计算剩余的行
+                if (i < mc_adjust) {
+                    float *packA_ptr = packA_copy + i * kc_adjust;
+                    float *packB_ptr = packB_copy;
+                    float *packC_ptr_copy = C_copy + i * ldc;
+                    float *packC_ptr;
+                    //  每次计算 col_batch 列。不足 col_batch 列的补0处理，因此也当成 col_batch 列进行计算
+                    for (int j = 0; j < nc_ceil; j += col_batch)
+                    {
+                        packC_ptr = packC_ptr_copy + j;
+                        this->inner_kernel_for_corner(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc);
+                        packB_ptr += packB_step;
+                    }
+                }
+                kernel_timer.accumBench();
+            }
+        }
+    }
+    // packA_timer.printBench("packA time", 1);
+    // packB_timer.printBench("packB time", 1);
+    // kernel_timer.printBench("kernel time", 1);
+
+    _mm_free(packA);
+    _mm_free(packB);
+}
+
+void ConvIm2colLayer::GEMM_v5_MNK(float* A, float* B, float* C) {
+    int lda = K;
+    int ldb = N;
+    int ldc = N;
+
+    // printf("gemm_v5\n");
+
+    Timer packA_timer;
+    Timer packB_timer;
+    Timer kernel_timer;
+
+    float *packA = static_cast<float*>(_mm_malloc((mc * K + 16) * sizeof(float))); 
+    float *packB = static_cast<float*>(_mm_malloc((K * align_ceil(N, col_batch) + 16) * sizeof(float)));
+    float *packC = static_cast<float*>(_mm_malloc((mc * nc + 16) * sizeof(float)));
+
+    assert((mc % row_batch == 0) && (nc % col_batch == 0));
+
+    for (int mt = 0; mt < M; mt += mc) {
+        int mc_adjust = min(M - mt, mc);
+
+        for (int nt = 0; nt < N; nt += nc) {
+            int nc_adjust = min(N - nt, nc);
+            int nc_ceil   = align_ceil(nc_adjust, col_batch);
+
+            for (int kt = 0; kt < K; kt += kc) {
+                int kc_adjust = min(K - kt, kc);
+                float* packA_copy = packA + (kt/kc)*(mc*kc);
+                float* packB_copy = packB + (nt/nc)*(K*nc) + (kt/kc)*(nc_ceil*kc);
+                float* packC_copy = C + mt*ldc + nt;
+                int packC_col = ldc;
+                // float* packC_copy = packC;
+                // int packC_col = nc;
+
+                
+                if (mt == 0) {
+                    packB_timer.startBench();
+                    this->pack_b(kc_adjust, nc_adjust, B + kt*ldb + nt, ldb, packB_copy, row_batch, col_batch);
+                    packB_timer.accumBench();
+                }
+
+                if (nt == 0) {
+                    packA_timer.startBench();
+                    this->pack_a(mc_adjust, kc_adjust, A + mt*lda + kt, lda, packA_copy, mc, kc, nc, row_batch, col_batch);
+                    packA_timer.accumBench();
+                }
+
+                kernel_timer.startBench();
+                int remain_row_start = mc_adjust - mc_adjust % row_batch;
+                #pragma statement scache_isolate_way L1=1
+                #pragma statement scache_isolate_assign packA_ptr
+                for (int i = 0; i < remain_row_start; i += row_batch) {
+                    for (int j = 0; j < nc_ceil; j += col_batch) {
+                        float* packA_ptr = packA_copy + i * kc_adjust;
+                        float* packB_ptr = packB_copy + j * kc_adjust;
+                        float* packC_ptr = packC_copy + i * packC_col + j;
+                        this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, packC_col, this->prefetch_a, this->prefetch_b, this->prefetch_c);
+                    }
+                }
+                #pragma statement end_scache_isolate_assign
+                #pragma statement end_scache_isolate_way
+
+                for (int i = remain_row_start; i < mc_adjust; i += row_batch) {
+                    for (int j = 0; j < nc_ceil; j += col_batch) {
+                        float* packA_ptr = packA_copy + i * kc_adjust;
+                        float* packB_ptr = packB_copy + j * kc_adjust;
+                        float* packC_ptr = packC_copy + i * packC_col + j;
+                        this->inner_kernel_for_corner(kc_adjust, packA_ptr, packB_ptr, packC_ptr, packC_col);
+                    }
+                }
+                kernel_timer.accumBench();
+
+            }
+
+            // 将结果写回到矩阵C中
+            // for (int i = 0; i < mc_adjust; i++) {
+            //     memcpy(C + (mt+i)*ldc + nt, packC + i*nc, nc_adjust * sizeof(float));
+            // }
+            // memset(packC, 0, mc * nc * sizeof(float));
+        }
+
+    }
+
+    // printf("c[0] = %f, c[1] = %f, c[2] = %f\n", C[0], C[1], C[2]);
+
+    // packA_timer.printBench("packA time", 1);
+    // packB_timer.printBench("packB time", 1);
+    // kernel_timer.printBench("kernel time", 1);
+
+    _mm_free(packA);
+    _mm_free(packB);
+    _mm_free(packC);
 }
 
 // 多线程版本
@@ -707,138 +1025,159 @@ void ConvIm2colLayer::set_pack_a() {
 }
 
 void ConvIm2colLayer::set_pack_b() {
-    if (row_batch == 8 && col_batch == 8) 
-        this->pack_b = pack_b_v2_8x8;
-    else if (row_batch == 8 && col_batch == 12)
-        this->pack_b = pack_b_v2_8x12;
-    else if (row_batch == 4 && col_batch == 16)
-        this->pack_b = pack_b_v2_4x16;
+    if (col_batch == 32)
+        this->pack_b = pack_b_v2_12x32;
+    else if (col_batch == 64)
+        this->pack_b = pack_b_v2_4x64;
+    // if (row_batch == 8 && col_batch == 8) 
+    //     this->pack_b = pack_b_v2_8x8;
+    // else if (row_batch == 8 && col_batch == 12)
+    //     this->pack_b = pack_b_v2_8x12;
+    // else if (row_batch == 4 && col_batch == 16)
+    //     this->pack_b = pack_b_v2_4x16;
 }
 
 void ConvIm2colLayer::set_pack_b_mt() {
-    if (row_batch == 8 && col_batch == 8) {
-        switch (gemm_version) {
-            case 0:
-                this->pack_b_mt = pack_b_multithread_8x8_v1;
-            case 1:
-                this->pack_b_mt = pack_b_multithread_8x8_v2;
-            case 2:
-                this->pack_b_mt = pack_b_multithread_8x8_v3;
-            default:
-                break;
-        }
-    }
-    else if (row_batch == 8 && col_batch == 12) {
-        switch (gemm_version) {
-            case 0:
-                this->pack_b_mt = pack_b_multithread_8x12_v1;
-            case 1:
-                this->pack_b_mt = pack_b_multithread_8x12_v2;
-            case 2:
-                this->pack_b_mt = pack_b_multithread_8x12_v3;
-            default:
-                break;
-        }
+    // if (row_batch == 8 && col_batch == 8) {
+    //     switch (gemm_version) {
+    //         case 0:
+    //             this->pack_b_mt = pack_b_multithread_8x8_v1;
+    //         case 1:
+    //             this->pack_b_mt = pack_b_multithread_8x8_v2;
+    //         case 2:
+    //             this->pack_b_mt = pack_b_multithread_8x8_v3;
+    //         default:
+    //             break;
+    //     }
+    // }
+    // else if (row_batch == 8 && col_batch == 12) {
+    //     switch (gemm_version) {
+    //         case 0:
+    //             this->pack_b_mt = pack_b_multithread_8x12_v1;
+    //         case 1:
+    //             this->pack_b_mt = pack_b_multithread_8x12_v2;
+    //         case 2:
+    //             this->pack_b_mt = pack_b_multithread_8x12_v3;
+    //         default:
+    //             break;
+    //     }
         
-    }
-    else if (row_batch == 4 && col_batch == 16) {
-        switch (gemm_version) {
-            case 0:
-                this->pack_b_mt = pack_b_multithread_4x16_v1;
-            case 1:
-                this->pack_b_mt = pack_b_multithread_4x16_v2;
-            case 2:
-                this->pack_b_mt = pack_b_multithread_4x16_v3;
-            default:
-                break;
-        }
-    }
+    // }
+    // else if (row_batch == 4 && col_batch == 16) {
+    //     switch (gemm_version) {
+    //         case 0:
+    //             this->pack_b_mt = pack_b_multithread_4x16_v1;
+    //         case 1:
+    //             this->pack_b_mt = pack_b_multithread_4x16_v2;
+    //         case 2:
+    //             this->pack_b_mt = pack_b_multithread_4x16_v3;
+    //         default:
+    //             break;
+    //     }
+    // }
 }
 
 void ConvIm2colLayer::set_pack_c() {
-    if (row_batch == 8 && col_batch == 8) {
-        if (pack_c_version == 0)
-            this->pack_c = nullptr;
-        else if (pack_c_version == 1)
-            this->pack_c = load_c_v2_8x8;
-        else
-            this->pack_c = load_c_v2_8x8_pack;
-    } else if (row_batch == 8 && col_batch == 12) {
-        if (pack_c_version == 0)
-            this->pack_c = nullptr;
-        else if (pack_c_version == 1)
-            this->pack_c = load_c_v2_8x12;
-        else
-            this->pack_c = load_c_v2_8x12_pack;
-    } else if (row_batch == 4 && col_batch == 16) {
-        if (pack_c_version == 0)
-            this->pack_c = nullptr;
-        else if (pack_c_version == 1)
-            this->pack_c = load_c_v2_4x16;
-        else
-            this->pack_c = load_c_v2_4x16_pack;
-    }
+    this->pack_c = nullptr;
+    // if (row_batch == 8 && col_batch == 8) {
+    //     if (pack_c_version == 0)
+    //         this->pack_c = nullptr;
+    //     else if (pack_c_version == 1)
+    //         this->pack_c = load_c_v2_8x8;
+    //     else
+    //         this->pack_c = load_c_v2_8x8_pack;
+    // } else if (row_batch == 8 && col_batch == 12) {
+    //     if (pack_c_version == 0)
+    //         this->pack_c = nullptr;
+    //     else if (pack_c_version == 1)
+    //         this->pack_c = load_c_v2_8x12;
+    //     else
+    //         this->pack_c = load_c_v2_8x12_pack;
+    // } else if (row_batch == 4 && col_batch == 16) {
+    //     if (pack_c_version == 0)
+    //         this->pack_c = nullptr;
+    //     else if (pack_c_version == 1)
+    //         this->pack_c = load_c_v2_4x16;
+    //     else
+    //         this->pack_c = load_c_v2_4x16_pack;
+    // }
 }
 
 void ConvIm2colLayer::set_unpack_c() {
-    if (row_batch == 8 && col_batch == 8) {
-        if (pack_c_version == 0)
-            this->unpack_c = nullptr;
-        else if (pack_c_version == 1)
-            this->unpack_c = write_c_v2_8x8;
-        else
-            this->unpack_c = write_c_v2_8x8_unpack;
-    } else if (row_batch == 8 && col_batch == 12) {
-        if (pack_c_version == 0)
-            this->unpack_c = nullptr;
-        else if (pack_c_version == 1)
-            this->unpack_c = write_c_v2_8x12;
-        else
-            this->unpack_c = write_c_v2_8x12_unpack;
-    } else if (row_batch == 4 && col_batch == 16) {
-        if (pack_c_version == 0)
-            this->unpack_c = nullptr;
-        else if (pack_c_version == 1)
-            this->unpack_c = write_c_v2_4x16;
-        else
-            this->unpack_c = write_c_v2_4x16_unpack;
-    }
+    this->unpack_c = nullptr;
+    // if (row_batch == 8 && col_batch == 8) {
+    //     if (pack_c_version == 0)
+    //         this->unpack_c = nullptr;
+    //     else if (pack_c_version == 1)
+    //         this->unpack_c = write_c_v2_8x8;
+    //     else
+    //         this->unpack_c = write_c_v2_8x8_unpack;
+    // } else if (row_batch == 8 && col_batch == 12) {
+    //     if (pack_c_version == 0)
+    //         this->unpack_c = nullptr;
+    //     else if (pack_c_version == 1)
+    //         this->unpack_c = write_c_v2_8x12;
+    //     else
+    //         this->unpack_c = write_c_v2_8x12_unpack;
+    // } else if (row_batch == 4 && col_batch == 16) {
+    //     if (pack_c_version == 0)
+    //         this->unpack_c = nullptr;
+    //     else if (pack_c_version == 1)
+    //         this->unpack_c = write_c_v2_4x16;
+    //     else
+    //         this->unpack_c = write_c_v2_4x16_unpack;
+    // }
 }
 
 void ConvIm2colLayer::set_inner_kernel() {
-    if (row_batch == 8 && col_batch == 8) {
-        if (pack_c_version == 0 || pack_c_version == 1)
-            this->inner_kernel = kernel_8x8;
-        else
-            this->inner_kernel = kernel_8x8_packC;
-    } else if (row_batch == 8 && col_batch == 12) {
-        if (pack_c_version == 0 || pack_c_version == 1)
-            this->inner_kernel = kernel_8x12;
-        else
-            this->inner_kernel = kernel_8x12_packC;
-    } else if (row_batch == 4 && col_batch == 16) {
-        if (pack_c_version == 0 || pack_c_version == 1)
-            this->inner_kernel = kernel_4x16;
-        else
-            this->inner_kernel = kernel_4x16_packC;
+    if (row_batch == 12 && col_batch == 32) {
+        // this->inner_kernel = kernel_12x32_v1;
+        this->inner_kernel = kernel_12x32_v2;
+    } else if (row_batch == 8 && col_batch == 32) {
+        this->inner_kernel = kernel_8x32;
+    } else if (row_batch == 14 && col_batch == 32) {
+        this->inner_kernel = kernel_14x32;
+    } else if (row_batch == 4 && col_batch == 64) {
+        this->inner_kernel = kernel_4x64;
     }
+    // if (row_batch == 8 && col_batch == 8) {
+    //     if (pack_c_version == 0 || pack_c_version == 1)
+    //         this->inner_kernel = kernel_8x8;
+    //     else
+    //         this->inner_kernel = kernel_8x8_packC;
+    // } else if (row_batch == 8 && col_batch == 12) {
+    //     if (pack_c_version == 0 || pack_c_version == 1)
+    //         this->inner_kernel = kernel_8x12;
+    //     else
+    //         this->inner_kernel = kernel_8x12_packC;
+    // } else if (row_batch == 4 && col_batch == 16) {
+    //     if (pack_c_version == 0 || pack_c_version == 1)
+    //         this->inner_kernel = kernel_4x16;
+    //     else
+    //         this->inner_kernel = kernel_4x16_packC;
+    // }
 }
 
 void ConvIm2colLayer::set_inner_kernel_for_corner(int k) {
-    if (row_batch == 8 && col_batch == 8) {
-        if (pack_c_version == 0 || pack_c_version == 1)
-            this->inner_kernel_for_corner = get_kernel_Nx8(k);
-        else
-            this->inner_kernel_for_corner = get_kernel_Nx8_packC(k);
-    } else if (row_batch == 8 && col_batch == 12) {
-        if (pack_c_version == 0 || pack_c_version == 1)
-            this->inner_kernel_for_corner = get_kernel_Nx12(k);
-        else
-            this->inner_kernel_for_corner = get_kernel_Nx12_packC(k);
-    } else if (row_batch == 4 && col_batch == 16) {
-        if (pack_c_version == 0 || pack_c_version == 1)
-            this->inner_kernel_for_corner = get_kernel_Nx16(k);
-        else
-            this->inner_kernel_for_corner = get_kernel_Nx16_packC(k);
+    if (col_batch == 32) {
+        this->inner_kernel_for_corner = get_kernel_Nx32(k);
+    } else if (col_batch == 64) {
+        this->inner_kernel_for_corner = get_kernel_Nx64(k);
     }
+    // if (row_batch == 8 && col_batch == 8) {
+    //     if (pack_c_version == 0 || pack_c_version == 1)
+    //         this->inner_kernel_for_corner = get_kernel_Nx8(k);
+    //     else
+    //         this->inner_kernel_for_corner = get_kernel_Nx8_packC(k);
+    // } else if (row_batch == 8 && col_batch == 12) {
+    //     if (pack_c_version == 0 || pack_c_version == 1)
+    //         this->inner_kernel_for_corner = get_kernel_Nx12(k);
+    //     else
+    //         this->inner_kernel_for_corner = get_kernel_Nx12_packC(k);
+    // } else if (row_batch == 4 && col_batch == 16) {
+    //     if (pack_c_version == 0 || pack_c_version == 1)
+    //         this->inner_kernel_for_corner = get_kernel_Nx16(k);
+    //     else
+    //         this->inner_kernel_for_corner = get_kernel_Nx16_packC(k);
+    // }
 }

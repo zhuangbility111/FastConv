@@ -29,18 +29,10 @@
 #define LOGE(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
-
-void print_vec2(float32x4_t* vp);
-void print_vec3(float32x4_t* vp);
-void print_vec(float32x4_t* vp, const char* comment);
-void print_vec(float32x4_t* vp);
-void print_arr(float* vp);
-void print_floats(const float* arr, const int len);
-
-void print_floats(const float* arr, const int dimX, const int dimY);
-
-float diff(float* arr1, float* arr2, int len);
-float diff(float* arr1, float* arr2, int M, int N);
+// void print_vec2(float32x4_t* vp);
+// void print_vec3(float32x4_t* vp);
+// void print_vec(float32x4_t* vp, const char* comment);
+// void print_vec(float32x4_t* vp);
 
 //Thanks nihui for this code snippet!
 #ifndef __aarch64__
@@ -63,6 +55,15 @@ static inline float32x4_t vfmaq_laneq_f32(float32x4_t _s, float32x4_t _a, float3
 #endif
 
 #include <time.h>
+
+void print_arr(float* vp);
+void print_floats(const float* arr, const int len);
+
+void print_floats(const float* arr, const int dimX, const int dimY);
+
+float diff(float* arr1, float* arr2, int len);
+float diff(float* arr1, float* arr2, int M, int N);
+
 class Timer
 {
     public:
@@ -74,6 +75,7 @@ class Timer
         void endBench(const char *commets);
         void endBench(const char *commets, double fold);
         double endBench(double fold);
+		double getBench(int fold);
     private:
         timespec start, stop;
         double accumulate;

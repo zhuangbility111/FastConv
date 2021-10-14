@@ -3,8 +3,8 @@
 #include <assert.h>
 #include <stdio.h>
 #include <omp.h>
-#include "../utility/common.h"
-#include "gemm_pack.h"
+#include "../../utility/common.h"
+#include "neon_gemm_pack.h"
 
 #define min(i, j) ((i) < (j) ? (i): (j))
 #define __ARM_ASM

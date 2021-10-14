@@ -1,5 +1,5 @@
-#ifndef GEMM_PACKING_H_
-#define GEMM_PACKING_H_
+#ifndef NEON_GEMM_PACKING_H_
+#define NEON_GEMM_PACKING_H_
 
 void pack_a_v1(int, int, float *, int, float *);
 

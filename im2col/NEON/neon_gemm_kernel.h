@@ -1,5 +1,5 @@
-#ifndef GEMM_KERNEL_H_
-#define GEMM_KERNEL_H_
+#ifndef NEON_GEMM_KERNEL_H_
+#define NEON_GEMM_KERNEL_H_
 
 typedef void (*InnerKernel)(int, float *, float *, float *, int, const int, const int, const int);
 typedef void (*InnerKernelForCorner)(int, float *, float *, float *, int);
