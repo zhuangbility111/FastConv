@@ -126,6 +126,11 @@ void Timer::printBench(const char* comment, int fold)
     printf("%s %lfms\n", comment, accumulate / fold);
 }
 
+void Timer::printBench(const char* comment, int fold, int tid)
+{
+    printf("Thread %d: %s %lfms\n", tid, comment, accumulate / fold);
+}
+
 void Timer::endBench(const char* comment)
 {
     clock_gettime(CLOCK_MONOTONIC, &stop);

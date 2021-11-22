@@ -21,7 +21,7 @@ void fillTestInput(float* target, int inChannels, nnp_size inputDim){
     	for(int m = 0; m < inputDim.height; ++m){
             for(int n = 0; n < inputDim.width; ++n){
             //    value += 1.0f;
-                value =  256 *rand() / double(RAND_MAX);
+                value =  64 *rand() / double(RAND_MAX);
                 *(pChannel++) = value;
             }
         }

@@ -72,6 +72,7 @@ class Timer
         void startBench();
 	    void accumBench();
 	    void printBench(const char *comments, int fold);
+	    void printBench(const char *comments, int fold, int tid);
         void endBench(const char *commets);
         void endBench(const char *commets, double fold);
         double endBench(double fold);

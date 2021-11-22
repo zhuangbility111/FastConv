@@ -31,13 +31,13 @@ else
 #	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kzfill=18 -Kswp -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=9 -Kprefetch_line_L2=70 -Nlst=t
 #	LD_FLAGS  = -Kfast -Kzfill=18 -Kswp -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=9 -Kprefetch_line_L2=70
 
-#	CXX = FCC
-#	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp
-#	LD_FLAGS  = -Kfast -Kopenmp -Nlibomp 
-
 	CXX = FCC
-	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kswp
-	LD_FLAGS  = -Kfast -Kopenmp -Nlibomp 
+	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp
+	LD_FLAGS  = -Kfast -Kopenmp -Nlibomp
+
+#	CXX = FCC
+#	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kswp
+#	LD_FLAGS  = -Kfast -Kopenmp -Nlibomp 
 endif
 
 # DIRS = $(shell find . -maxdepth 3 -type d)

@@ -26,9 +26,13 @@ class ConvLayer
     public:
         ConvLayer(float *input, float *kernel, float *biasw, float *output_ref, size_t ic, size_t ih, size_t iw, size_t oc, size_t kh=3, size_t kw=3, size_t sh=1, size_t sw=1, size_t pad_left=1, size_t pad_right=1, size_t pad_top=1, size_t pad_bottom=1, size_t g=1, bool bias=0, size_t nt = 1, size_t iter = 10)
         {
-            num_threads = nt;
+            const size_t cores_per_node = 12;
+            num_threads = omp_get_max_threads();
+            num_nodes = (num_threads + cores_per_node - 1) / cores_per_node;
+			printf("nodes number: %u, threads number: %u\n", num_nodes, num_threads);
+
             iterations  = iter;
-            omp_set_num_threads(num_threads);
+            // omp_set_num_threads(num_threads);
 
 	        //Input
             input_channels = ic;
@@ -140,6 +144,7 @@ class ConvLayer
         size_t group;
         bool   bias_term;
 	    size_t num_threads;
+        size_t num_nodes;
         size_t iterations;
 
 	    float *input_data;

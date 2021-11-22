@@ -2,6 +2,8 @@ algo=$2
 tuning=$4
 iterations=$6
 
+export OMP_NUM_THREADS=1
+
 ./winograd_dev -ic 3 -oc 64 -is 224 224 -ks 3 3 -ip 1 -a $algo -tn $tuning -i $iterations
 ./winograd_dev -ic 64 -oc 64 -is 224 224 -ks 3 3 -ip 1 -a $algo -tn $tuning -i $iterations
 ./winograd_dev -ic 64 -oc 128 -is 112 112 -ks 3 3 -ip 1 -a $algo -tn $tuning -i $iterations

@@ -2,10 +2,13 @@
 #include <assert.h>
 #include <stdio.h>
 #include "../../utility/helper.h"
+#include "./sve_gemm_kernel.h"
 
 #include <arm_sve.h>
 
 #define _ASM_
+
+const int simd_width = 16;
 
 typedef void (*InnerKernel)(int, float *, float *, float *, int, const int, const int, const int);
 typedef void (*InnerKernelForCorner)(int, float *, float *, float *, int);
@@ -1498,6 +1501,327 @@ void kernel_12x32_v2(int kc_adjust, float *packA, float* packB, float *packC, in
 #endif
 }
 
+template <int M, int N>
+void kernel_MxN_for_12x32(int kc_adjust, float *packA, float *packB, float *packC, int ldc, int remain_col,
+                            svbool_t p32_v0, svbool_t p32_v1, svbool_t p32_v2) {
+    float* packAPtr = packA;
+    float* packBPtr = packB;
+    float* cPtr = packC;
+
+    svfloat32_t va0,   va1, va2, va3;
+    svfloat32_t vb0,   vb1;
+    svfloat32_t vc00,  vc01;
+    svfloat32_t vc10,  vc11;
+    svfloat32_t vc20,  vc21;
+    svfloat32_t vc30,  vc31;
+    svfloat32_t vc40,  vc41;
+    svfloat32_t vc50,  vc51;
+    svfloat32_t vc60,  vc61;
+    svfloat32_t vc70,  vc71;
+    svfloat32_t vc80,  vc81;
+    svfloat32_t vc90,  vc91;
+    svfloat32_t vc100, vc101;
+    svfloat32_t vc110, vc111;
+    svfloat32_t vc120, vc121;
+    svfloat32_t vc130, vc131;
+
+    // load C
+    if (M >= 1) {
+        if (N >= 1 * simd_width) 
+            vc00 = svld1_f32(p32_v0, cPtr + 0 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc01 = svld1_f32(p32_v1, cPtr + 0 * ldc + 1 * simd_width);
+    }
+    if (M >= 2) {
+        if (N >= 1 * simd_width)
+            vc10 = svld1_f32(p32_v0, cPtr + 1 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc11 = svld1_f32(p32_v1, cPtr + 1 * ldc + 1 * simd_width);
+    }
+    if (M >= 3) {
+        if (N >= 1 * simd_width) 
+            vc20 = svld1_f32(p32_v0, cPtr + 2 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc21 = svld1_f32(p32_v1, cPtr + 2 * ldc + 1 * simd_width);
+    }
+    if (M >= 4) {
+        if (N >= 1 * simd_width) 
+            vc30 = svld1_f32(p32_v0, cPtr + 3 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc31 = svld1_f32(p32_v1, cPtr + 3 * ldc + 1 * simd_width);
+    }
+    if (M >= 5) {
+        if (N >= 1 * simd_width) 
+            vc40 = svld1_f32(p32_v0, cPtr + 4 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc41 = svld1_f32(p32_v1, cPtr + 4 * ldc + 1 * simd_width);
+    }
+    if (M >= 6) {
+        if (N >= 1 * simd_width) 
+            vc50 = svld1_f32(p32_v0, cPtr + 5 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc51 = svld1_f32(p32_v1, cPtr + 5 * ldc + 1 * simd_width);
+    }
+    if (M >= 7) {
+        if (N >= 1 * simd_width) 
+            vc60 = svld1_f32(p32_v0, cPtr + 6 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc61 = svld1_f32(p32_v1, cPtr + 6 * ldc + 1 * simd_width);
+    }
+    if (M >= 8) {
+        if (N >= 1 * simd_width) 
+            vc70 = svld1_f32(p32_v0, cPtr + 7 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc71 = svld1_f32(p32_v1, cPtr + 7 * ldc + 1 * simd_width);
+    }
+    if (M >= 9) {
+        if (N >= 1 * simd_width) 
+            vc80 = svld1_f32(p32_v0, cPtr + 8 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc81 = svld1_f32(p32_v1, cPtr + 8 * ldc + 1 * simd_width);
+    }
+    if (M >= 10) {
+        if (N >= 1 * simd_width) 
+            vc90 = svld1_f32(p32_v0, cPtr + 9 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc91 = svld1_f32(p32_v1, cPtr + 9 * ldc + 1 * simd_width);
+    }
+    if (M >= 11) {
+        if (N >= 1 * simd_width) 
+            vc100 = svld1_f32(p32_v0, cPtr + 10 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc101 = svld1_f32(p32_v1, cPtr + 10 * ldc + 1 * simd_width);
+    }
+    if (M >= 12) {
+        if (N >= 1 * simd_width) 
+            vc110 = svld1_f32(p32_v0, cPtr + 11 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc111 = svld1_f32(p32_v1, cPtr + 11 * ldc + 1 * simd_width);
+    }
+
+
+    for (int k = 0; k < kc_adjust; k++) {
+        // load B
+        if (N >= 1 * simd_width) 
+            vb0 = svld1_f32(p32_v0, packBPtr);
+        if (N >= 2 * simd_width)
+            vb1 = svld1_f32(p32_v1, packBPtr + 1 * simd_width);
+        
+        if (M >= 1) {
+            va0 = svdup_n_f32(packAPtr[0]);
+            if (N >= 1 * simd_width)
+                vc00 = svmla_f32_x(p32_v0, vc00, va0, vb0);
+            if (N >= 2 * simd_width)
+                vc01 = svmla_f32_x(p32_v1, vc01, va0, vb1);
+        }
+        if (M >= 2) {
+            va1 = svdup_n_f32(packAPtr[1]);
+            if (N >= 1 * simd_width)
+                vc10 = svmla_f32_x(p32_v0, vc10, va1, vb0);
+            if (N >= 2 * simd_width)
+                vc11 = svmla_f32_x(p32_v1, vc11, va1, vb1);
+        }
+        if (M >= 3) {
+            va2 = svdup_n_f32(packAPtr[2]);
+            if (N >= 1 * simd_width)
+                vc20 = svmla_f32_x(p32_v0, vc20, va2, vb0);
+            if (N >= 2 * simd_width)
+                vc21 = svmla_f32_x(p32_v1, vc21, va2, vb1);
+        }
+        if (M >= 4) {
+            va3 = svdup_n_f32(packAPtr[3]);
+            if (N >= 1 * simd_width)
+                vc30 = svmla_f32_x(p32_v0, vc30, va3, vb0);
+            if (N >= 2 * simd_width)
+                vc31 = svmla_f32_x(p32_v1, vc31, va3, vb1);
+        }
+        if (M >= 5) {
+            va0 = svdup_n_f32(packAPtr[4]);
+            if (N >= 1 * simd_width)
+                vc40 = svmla_f32_x(p32_v0, vc40, va0, vb0);
+            if (N >= 2 * simd_width)
+                vc41 = svmla_f32_x(p32_v1, vc41, va0, vb1);
+        }
+        if (M >= 6) {
+            va1 = svdup_n_f32(packAPtr[5]);
+            if (N >= 1 * simd_width)
+                vc50 = svmla_f32_x(p32_v0, vc50, va1, vb0);
+            if (N >= 2 * simd_width)
+                vc51 = svmla_f32_x(p32_v1, vc51, va1, vb1);
+        }
+        if (M >= 7) {
+            va2 = svdup_n_f32(packAPtr[6]);
+            if (N >= 1 * simd_width)
+                vc60 = svmla_f32_x(p32_v0, vc60, va2, vb0);
+            if (N >= 2 * simd_width)
+                vc61 = svmla_f32_x(p32_v1, vc61, va2, vb1);
+        }
+        if (M >= 8) {
+            va3 = svdup_n_f32(packAPtr[7]);
+            if (N >= 1 * simd_width)
+                vc70 = svmla_f32_x(p32_v0, vc70, va3, vb0);
+            if (N >= 2 * simd_width)
+                vc71 = svmla_f32_x(p32_v1, vc71, va3, vb1);
+        }
+        if (M >= 9) {
+            va0 = svdup_n_f32(packAPtr[8]);
+            if (N >= 1 * simd_width)
+                vc80 = svmla_f32_x(p32_v0, vc80, va0, vb0);
+            if (N >= 2 * simd_width)
+                vc81 = svmla_f32_x(p32_v1, vc81, va0, vb1);
+        }
+        if (M >= 10) {
+            va1 = svdup_n_f32(packAPtr[9]);
+            if (N >= 1 * simd_width)
+                vc90 = svmla_f32_x(p32_v0, vc90, va1, vb0);
+            if (N >= 2 * simd_width)
+                vc91 = svmla_f32_x(p32_v1, vc91, va1, vb1);
+        }
+        if (M >= 11) {
+            va2 = svdup_n_f32(packAPtr[10]);
+            if (N >= 1 * simd_width)
+                vc100 = svmla_f32_x(p32_v0, vc100, va2, vb0);
+            if (N >= 2 * simd_width)
+                vc101 = svmla_f32_x(p32_v1, vc101, va2, vb1);
+        }
+        if (M >= 12) {
+            va3 = svdup_n_f32(packAPtr[11]);
+            if (N >= 1 * simd_width)
+                vc110 = svmla_f32_x(p32_v0, vc110, va3, vb0);
+            if (N >= 2 * simd_width)
+                vc111 = svmla_f32_x(p32_v1, vc111, va3, vb1);
+        }
+
+        packAPtr += M;
+        packBPtr += remain_col;
+    }
+
+    // store C
+    if (M >= 1) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 0 * ldc + 0 * simd_width, vc00);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 0 * ldc + 1 * simd_width, vc01);
+    }
+    if (M >= 2) {
+        if (N >= 1 * simd_width)
+            svst1_f32(p32_v0, cPtr + 1 * ldc + 0 * simd_width, vc10);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 1 * ldc + 1 * simd_width, vc11);
+    }
+    if (M >= 3) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 2 * ldc + 0 * simd_width, vc20);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 2 * ldc + 1 * simd_width, vc21);
+    }
+    if (M >= 4) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 3 * ldc + 0 * simd_width, vc30);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 3 * ldc + 1 * simd_width, vc31);
+    }
+    if (M >= 5) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 4 * ldc + 0 * simd_width, vc40);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 4 * ldc + 1 * simd_width, vc41);
+    }
+    if (M >= 6) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 5 * ldc + 0 * simd_width, vc50);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 5 * ldc + 1 * simd_width, vc51);
+    }
+    if (M >= 7) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 6 * ldc + 0 * simd_width, vc60);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 6 * ldc + 1 * simd_width, vc61);
+    }
+    if (M >= 8) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 7 * ldc + 0 * simd_width, vc70);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 7 * ldc + 1 * simd_width, vc71);
+    }
+    if (M >= 9) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 8 * ldc + 0 * simd_width, vc80);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 8 * ldc + 1 * simd_width, vc81);
+    }
+    if (M >= 10) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 9 * ldc + 0 * simd_width, vc90);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 9 * ldc + 1 * simd_width, vc91);
+    }
+    if (M >= 11) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 10 * ldc + 0 * simd_width, vc100);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 10 * ldc + 1 * simd_width, vc101);
+    }
+    if (M >= 12) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 11 * ldc + 0 * simd_width, vc110);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 11 * ldc + 1 * simd_width, vc111);
+    }
+}
+
+const inner_kernel_for_corner_func_t kernel_MxN_for_12x32_func_tab[12][2] = {
+    {
+        kernel_MxN_for_12x32<1, 16>,
+        kernel_MxN_for_12x32<1, 32>
+    },
+    {
+        kernel_MxN_for_12x32<2, 16>,
+        kernel_MxN_for_12x32<2, 32>
+    },
+    {
+        kernel_MxN_for_12x32<3, 16>,
+        kernel_MxN_for_12x32<3, 32>
+    },
+    {
+        kernel_MxN_for_12x32<4, 16>,
+        kernel_MxN_for_12x32<4, 32>
+    },
+    {
+        kernel_MxN_for_12x32<5, 16>,
+        kernel_MxN_for_12x32<5, 32>
+    },
+    {
+        kernel_MxN_for_12x32<6, 16>,
+        kernel_MxN_for_12x32<6, 32>
+    },
+    {
+        kernel_MxN_for_12x32<7, 16>,
+        kernel_MxN_for_12x32<7, 32>
+    },
+    {
+        kernel_MxN_for_12x32<8, 16>,
+        kernel_MxN_for_12x32<8, 32>
+    },
+    {
+        kernel_MxN_for_12x32<9, 16>,
+        kernel_MxN_for_12x32<9, 32>
+    },
+    {
+        kernel_MxN_for_12x32<10, 16>,
+        kernel_MxN_for_12x32<10, 32>
+    },
+    {
+        kernel_MxN_for_12x32<11, 16>,
+        kernel_MxN_for_12x32<11, 32>
+    },
+    {
+        kernel_MxN_for_12x32<12, 16>,
+        kernel_MxN_for_12x32<12, 32>
+    },
+};
+
 // new version, use broadcast and fmla and loop unroll by 2
 void kernel_8x32_v1(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
 
@@ -1677,7 +2001,563 @@ void kernel_8x32_v1(int kc_adjust, float *packA, float* packB, float *packC, int
 #endif
 }
 
+void kernel_8x48(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
 
+    float* packAPtr = packA;
+    float* packBPtr = packB;
+    float* packCPtr = packC;
+
+#ifdef _ASM_
+
+    float* packCPtr0  = packC;
+    float* packCPtr1  = packC + 1  * ldc;
+    float* packCPtr2  = packC + 2  * ldc;
+    float* packCPtr3  = packC + 3  * ldc;
+    float* packCPtr4  = packC + 4  * ldc;
+    float* packCPtr5  = packC + 5  * ldc;
+    float* packCPtr6  = packC + 6  * ldc;
+    float* packCPtr7  = packC + 7  * ldc;
+
+    asm volatile(
+        "ptrue  p0.s  \n"
+        "mov    x4, #16 \n"
+        "mov    x5, %[kc]    \n"
+
+        "cmp x5, #0x2\n"
+        
+        "ld1w	{ z8.s },  p0/z, [%[pC0]]      \n"
+        "ld1w	{ z9.s },  p0/z, [%[pC0], #1, MUL VL]    \n"
+        "ld1w	{ z10.s }, p0/z, [%[pC0], #2, MUL VL]    \n"
+        "ld1w	{ z11.s }, p0/z, [%[pC1]]      \n"
+        "ld1w	{ z12.s }, p0/z, [%[pC1], #1, MUL VL]    \n"
+        "ld1w	{ z13.s }, p0/z, [%[pC1], #2, MUL VL]    \n"
+        "ld1w	{ z14.s }, p0/z, [%[pC2]]      \n"
+        "ld1w	{ z15.s }, p0/z, [%[pC2], #1, MUL VL]    \n"
+        "ld1w	{ z16.s }, p0/z, [%[pC2], #2, MUL VL]    \n"
+        "ld1w	{ z17.s }, p0/z, [%[pC3]]      \n"
+        "ld1w	{ z18.s }, p0/z, [%[pC3], #1, MUL VL]    \n"
+        "ld1w	{ z19.s }, p0/z, [%[pC3], #2, MUL VL]    \n"
+        "ld1w	{ z20.s }, p0/z, [%[pC4]]      \n"
+        "ld1w	{ z21.s }, p0/z, [%[pC4], #1, MUL VL]    \n"
+        "ld1w	{ z22.s }, p0/z, [%[pC4], #2, MUL VL]    \n"
+        "ld1w	{ z23.s }, p0/z, [%[pC5]]      \n"
+        "ld1w	{ z24.s }, p0/z, [%[pC5], #1, MUL VL]    \n"
+        "ld1w	{ z25.s }, p0/z, [%[pC5], #2, MUL VL]    \n"
+        "ld1w	{ z26.s }, p0/z, [%[pC6]]     \n"
+        "ld1w	{ z27.s }, p0/z, [%[pC6], #1, MUL VL]    \n"
+        "ld1w	{ z28.s }, p0/z, [%[pC6], #2, MUL VL]    \n"
+        "ld1w	{ z29.s }, p0/z, [%[pC7]]     \n"
+        "ld1w	{ z30.s }, p0/z, [%[pC7], #1, MUL VL]    \n"
+        "ld1w	{ z31.s }, p0/z, [%[pC7], #2, MUL VL]    \n"
+
+        "ld1w	{ z0.s }, p0/z, [%[pB]]                 \n"
+	    "ld1w	{ z1.s }, p0/z, [%[pB], #1, MUL VL]     \n"
+	    "ld1w	{ z2.s }, p0/z, [%[pB], #2, MUL VL]     \n"
+
+        "ld1rw	{ z3.s }, p0/z, [%[pA]]                 \n"
+	    "ld1rw	{ z4.s }, p0/z, [%[pA], #4]             \n"
+	    "ld1rw	{ z5.s }, p0/z, [%[pA], #8]             \n"
+	    "ld1rw	{ z6.s }, p0/z, [%[pA], #12]            \n"
+        
+		"blt 4f\n"
+
+    "3:"  // main loop head
+        "fmla z8.s, p0/M, z0.s, z3.s\n"
+        "fmla z9.s, p0/M, z1.s, z3.s\n"
+        "sub  x5, x5, #0x2\n"
+        "fmla z10.s, p0/M, z2.s, z3.s\n"
+
+        "ld1rw { z3.s }, p0/Z, [%x[pA], #16]\n"
+        "prfm	pldl1keep, [%[pA], #256]                \n"
+        "fmla z11.s, p0/M, z0.s, z4.s\n"
+        "fmla z12.s, p0/M, z1.s, z4.s\n"
+        "fmla z13.s, p0/M, z2.s, z4.s\n"
+
+        "ld1rw { z4.s }, p0/Z, [%x[pA], #20]\n"
+        "fmla z14.s, p0/M, z0.s, z5.s\n"
+        "fmla z15.s, p0/M, z1.s, z5.s\n"
+        "fmla z16.s, p0/M, z2.s, z5.s\n"
+        "cmp x5, #0x2\n"
+
+        "ld1rw { z5.s }, p0/Z, [%x[pA], #24]\n"
+        "fmla z17.s, p0/M, z0.s, z6.s\n"
+        "fmla z18.s, p0/M, z1.s, z6.s\n"
+        "fmla z19.s, p0/M, z2.s, z6.s\n"
+
+        "ld1rw { z6.s }, p0/Z, [%x[pA], #28]\n"
+        "fmla z20.s, p0/M, z0.s, z3.s\n"
+        "fmla z21.s, p0/M, z1.s, z3.s\n"
+        "fmla z22.s, p0/M, z2.s, z3.s\n"
+
+        "ld1rw { z3.s }, p0/Z, [%x[pA], #32]\n"
+        "fmla z23.s, p0/M, z0.s, z4.s\n"
+        "fmla z24.s, p0/M, z1.s, z4.s\n"
+        "fmla z25.s, p0/M, z2.s, z4.s\n"
+
+        "ld1rw { z4.s }, p0/Z, [%x[pA], #36]\n"
+        "prfm	pldl1keep, [%[pA], #512]                \n"
+        "fmla z26.s, p0/M, z0.s, z5.s\n"
+        "fmla z27.s, p0/M, z1.s, z5.s\n"
+        "fmla z28.s, p0/M, z2.s, z5.s\n"
+
+        "ld1rw { z5.s }, p0/Z, [%x[pA], #40]\n"
+        "fmla z29.s, p0/M, z0.s, z6.s\n"
+        "ld1w { z0.s }, p0/Z, [%[pB], #3, MUL VL]\n"
+        "fmla z30.s, p0/M, z1.s, z6.s\n"
+        "fmla z31.s, p0/M, z2.s, z6.s\n"
+
+        "ld1w { z1.s }, p0/Z, [%[pB], #4, MUL VL]\n"
+        "ld1w { z2.s }, p0/Z, [%[pB], #5, MUL VL]\n"
+        "fmla z8.s, p0/M, z0.s, z3.s\n"
+        "ld1rw { z6.s }, p0/Z, [%x[pA], #44]\n"
+        "fmla z9.s, p0/M, z1.s, z3.s\n"
+        "fmla z10.s, p0/M, z2.s, z3.s\n"
+
+        "fmla z11.s, p0/M, z0.s, z4.s\n"
+        "ld1rw { z3.s }, p0/Z, [%x[pA], #48]\n"
+        "fmla z12.s, p0/M, z1.s, z4.s\n"
+        "fmla z13.s, p0/M, z2.s, z4.s\n"
+
+        // "prfm	pldl1keep, [%[pA], #768]                \n"
+        "ld1rw { z4.s }, p0/Z, [%x[pA], #52]\n"
+        "fmla z14.s, p0/M, z0.s, z5.s\n"
+        "fmla z15.s, p0/M, z1.s, z5.s\n"
+        "add %[pB], %[pB], #384\n"
+        "fmla z16.s, p0/M, z2.s, z5.s\n"
+
+        "ld1rw { z5.s }, p0/Z, [%x[pA], #56]\n"
+        "fmla z17.s, p0/M, z0.s, z6.s\n"
+        "fmla z18.s, p0/M, z1.s, z6.s\n"
+        "fmla z19.s, p0/M, z2.s, z6.s\n"
+
+        "ld1rw { z6.s }, p0/Z, [%x[pA], #60]\n"
+        "add %x[pA], %x[pA], #0x40\n"
+        "fmla z20.s, p0/M, z0.s, z3.s\n"
+        "fmla z21.s, p0/M, z1.s, z3.s\n"
+        "fmla z22.s, p0/M, z2.s, z3.s\n"
+
+        "fmla z23.s, p0/M, z0.s, z4.s\n"
+        "ld1rw { z3.s }, p0/Z, [%x[pA]]\n"
+        "fmla z24.s, p0/M, z1.s, z4.s\n"
+        "fmla z25.s, p0/M, z2.s, z4.s\n"
+
+        "ld1rw { z4.s }, p0/Z, [%x[pA], #4]\n"
+        "fmla z26.s, p0/M, z0.s, z5.s\n"
+        "fmla z27.s, p0/M, z1.s, z5.s\n"
+        "fmla z28.s, p0/M, z2.s, z5.s\n"
+
+        "fmla z29.s, p0/M, z0.s, z6.s\n"
+        "ld1w { z0.s }, p0/Z, [%[pB]]\n"
+        "fmla z30.s, p0/M, z1.s, z6.s\n"
+        "fmla z31.s, p0/M, z2.s, z6.s\n"
+        
+        "ld1w { z1.s }, p0/Z, [%[pB], #1, MUL VL]\n"
+        "ld1w { z2.s }, p0/Z, [%[pB], #2, MUL VL]\n"
+        "ld1rw { z5.s }, p0/Z, [%x[pA], #8]\n"
+        "ld1rw { z6.s }, p0/Z, [%x[pA], #12]\n"
+        "bge 3b\n"
+        "cbz x5, 5f\n"
+
+        "4:"  // main loop skip
+        "fmla z8.s, p0/M, z0.s, z3.s\n"
+        "fmla z9.s, p0/M, z1.s, z3.s\n"
+        "add %[pB], %[pB], #192\n"
+        "fmla z10.s, p0/M, z2.s, z3.s\n"
+        "ld1rw { z3.s }, p0/Z, [%x[pA], #16]\n"
+        "fmla z11.s, p0/M, z0.s, z4.s\n"
+        "fmla z12.s, p0/M, z1.s, z4.s\n"
+        "fmla z13.s, p0/M, z2.s, z4.s\n"
+        "ld1rw { z4.s }, p0/Z, [%x[pA], #20]\n"
+        "fmla z14.s, p0/M, z0.s, z5.s\n"
+        "fmla z15.s, p0/M, z1.s, z5.s\n"
+        "fmla z16.s, p0/M, z2.s, z5.s\n"
+        "ld1rw { z5.s }, p0/Z, [%x[pA], #24]\n"
+        "fmla z17.s, p0/M, z0.s, z6.s\n"
+        "fmla z18.s, p0/M, z1.s, z6.s\n"
+        "fmla z19.s, p0/M, z2.s, z6.s\n"
+        "ld1rw { z6.s }, p0/Z, [%x[pA], #28]\n"
+        "fmla z20.s, p0/M, z0.s, z3.s\n"
+        "fmla z21.s, p0/M, z1.s, z3.s\n"
+        "add %x[pA], %x[pA], #0x20\n"
+        "fmla z22.s, p0/M, z2.s, z3.s\n"
+        "fmla z23.s, p0/M, z0.s, z4.s\n"
+        "fmla z24.s, p0/M, z1.s, z4.s\n"
+        "fmla z25.s, p0/M, z2.s, z4.s\n"
+        "fmla z26.s, p0/M, z0.s, z5.s\n"
+        "fmla z27.s, p0/M, z1.s, z5.s\n"
+        "fmla z28.s, p0/M, z2.s, z5.s\n"
+        "fmla z29.s, p0/M, z0.s, z6.s\n"
+        "fmla z30.s, p0/M, z1.s, z6.s\n"
+        "fmla z31.s, p0/M, z2.s, z6.s\n"
+        // "cbz x5, 5f\n"
+        // "ld1w { z0.s }, p0/Z, [%[pB]]\n"
+        // "ld1w { z1.s }, p0/Z, [%[pB], #1, MUL VL]\n"
+        // "ld1w { z2.s }, p0/Z, [%[pB], #2, MUL VL]\n"
+        // "ld1rw { z3.s }, p0/Z, [%x[pA]]\n"
+        // "fmla z8.s, p0/M, z0.s, z3.s\n"
+        // "ld1rw { z4.s }, p0/Z, [%x[pA], #4]\n"
+        // "ld1rw { z5.s }, p0/Z, [%x[pA], #8]\n"
+        // "fmla z9.s, p0/M, z1.s, z3.s\n"
+        // "ld1rw { z6.s }, p0/Z, [%x[pA], #12]\n"
+        // "fmla z10.s, p0/M, z2.s, z3.s\n"
+        // "fmla z11.s, p0/M, z0.s, z4.s\n"
+        // "ld1rw { z3.s }, p0/Z, [%x[pA], #16]\n"
+        // "fmla z12.s, p0/M, z1.s, z4.s\n"
+        // "fmla z13.s, p0/M, z2.s, z4.s\n"
+        // "ld1rw { z4.s }, p0/Z, [%x[pA], #20]\n"
+        // "fmla z14.s, p0/M, z0.s, z5.s\n"
+        // "fmla z15.s, p0/M, z1.s, z5.s\n"
+        // "fmla z16.s, p0/M, z2.s, z5.s\n"
+        // "fmla z17.s, p0/M, z0.s, z6.s\n"
+        // "ld1rw { z5.s }, p0/Z, [%x[pA], #24]\n"
+        // "fmla z18.s, p0/M, z1.s, z6.s\n"
+        // "fmla z19.s, p0/M, z2.s, z6.s\n"
+        // "ld1rw { z6.s }, p0/Z, [%x[pA], #28]\n"
+        // "add %[pB], %[pB], #192\n"
+        // "fmla z20.s, p0/M, z0.s, z3.s\n"
+        // "fmla z21.s, p0/M, z1.s, z3.s\n"
+        // "add %x[pA], %x[pA], #0x20\n"
+        // "fmla z22.s, p0/M, z2.s, z3.s\n"
+        // "fmla z23.s, p0/M, z0.s, z4.s\n"
+        // "fmla z24.s, p0/M, z1.s, z4.s\n"
+        // "fmla z25.s, p0/M, z2.s, z4.s\n"
+        // "fmla z26.s, p0/M, z0.s, z5.s\n"
+        // "fmla z27.s, p0/M, z1.s, z5.s\n"
+        // "fmla z28.s, p0/M, z2.s, z5.s\n"
+        // "fmla z29.s, p0/M, z0.s, z6.s\n"
+        // "fmla z30.s, p0/M, z1.s, z6.s\n"
+        // "fmla z31.s, p0/M, z2.s, z6.s\n"
+
+        "5:"  // multiply loop done
+
+        "st1w	{ z8.s },  p0, [%[pC0]]      \n"
+        "st1w	{ z9.s },  p0, [%[pC0], #1, MUL VL]    \n"
+        "st1w	{ z10.s }, p0, [%[pC0], #2, MUL VL]    \n"
+        "st1w	{ z11.s }, p0, [%[pC1]]      \n"
+        "st1w	{ z12.s }, p0, [%[pC1], #1, MUL VL]    \n"
+        "st1w	{ z13.s }, p0, [%[pC1], #2, MUL VL]    \n"
+        "st1w	{ z14.s }, p0, [%[pC2]]      \n"
+        "st1w	{ z15.s }, p0, [%[pC2], #1, MUL VL]    \n"
+        "st1w	{ z16.s }, p0, [%[pC2], #2, MUL VL]    \n"
+        "st1w	{ z17.s }, p0, [%[pC3]]      \n"
+        "st1w	{ z18.s }, p0, [%[pC3], #1, MUL VL]    \n"
+        "st1w	{ z19.s }, p0, [%[pC3], #2, MUL VL]    \n"
+        "st1w	{ z20.s }, p0, [%[pC4]]      \n"
+        "st1w	{ z21.s }, p0, [%[pC4], #1, MUL VL]    \n"
+        "st1w	{ z22.s }, p0, [%[pC4], #2, MUL VL]    \n"
+        "st1w	{ z23.s }, p0, [%[pC5]]      \n"
+        "st1w	{ z24.s }, p0, [%[pC5], #1, MUL VL]    \n"
+        "st1w	{ z25.s }, p0, [%[pC5], #2, MUL VL]    \n"
+        "st1w	{ z26.s }, p0, [%[pC6]]     \n"
+        "st1w	{ z27.s }, p0, [%[pC6], #1, MUL VL]    \n"
+        "st1w	{ z28.s }, p0, [%[pC6], #2, MUL VL]    \n"
+        "st1w	{ z29.s }, p0, [%[pC7]]     \n"
+        "st1w	{ z30.s }, p0, [%[pC7], #1, MUL VL]    \n"
+        "st1w	{ z31.s }, p0, [%[pC7], #2, MUL VL]    \n"
+
+
+    : [pA]"=&r"(packAPtr),     // %0
+      [pB]"=&r"(packBPtr)      // %1
+    : "[pA]"   (packAPtr),
+      "[pB]"   (packBPtr), 
+      [pC0] "r"(packCPtr0),    // %2
+      [pC1] "r"(packCPtr1),    // %2
+      [pC2] "r"(packCPtr2),    // %3
+      [pC3] "r"(packCPtr3),    // %3
+      [pC4] "r"(packCPtr4),    // %4
+      [pC5] "r"(packCPtr5),    // %4
+      [pC6] "r"(packCPtr6),    // %5
+      [pC7] "r"(packCPtr7),    // %5
+      [ldc] "r"(ldc),
+      [kc]  "r"(kc_adjust),
+      [preA]"r"(PREFETCH_A),
+      [preB]"r"(PREFETCH_B),
+      [preC]"r"(PREFETCH_C)
+    : "memory", "cc", "p0", "x4", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+      "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+      "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+#endif
+}
+
+template <int M, int N>
+void kernel_MxN_for_8x48(int kc_adjust, float *packA, float *packB, float *packC, int ldc, int remain_col,
+                            svbool_t p32_v0, svbool_t p32_v1, svbool_t p32_v2) {
+    float* packAPtr = packA;
+    float* packBPtr = packB;
+    float* cPtr = packC;
+
+    svfloat32_t va0,  va1,  va2,  va3;
+    svfloat32_t vb0,  vb1,  vb2;
+    svfloat32_t vc00, vc01, vc02;
+    svfloat32_t vc10, vc11, vc12;
+    svfloat32_t vc20, vc21, vc22;
+    svfloat32_t vc30, vc31, vc32;
+    svfloat32_t vc40, vc41, vc42;
+    svfloat32_t vc50, vc51, vc52;
+    svfloat32_t vc60, vc61, vc62;
+    svfloat32_t vc70, vc71, vc72;
+
+    // load C
+    if (M >= 1) {
+        if (N >= 1 * simd_width) 
+            vc00 = svld1_f32(p32_v0, cPtr + 0 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc01 = svld1_f32(p32_v1, cPtr + 0 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc02 = svld1_f32(p32_v2, cPtr + 0 * ldc + 2 * simd_width);
+    }
+    if (M >= 2) {
+        if (N >= 1 * simd_width)
+            vc10 = svld1_f32(p32_v0, cPtr + 1 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc11 = svld1_f32(p32_v1, cPtr + 1 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc12 = svld1_f32(p32_v2, cPtr + 1 * ldc + 2 * simd_width);
+    }
+    if (M >= 3) {
+        if (N >= 1 * simd_width) 
+            vc20 = svld1_f32(p32_v0, cPtr + 2 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc21 = svld1_f32(p32_v1, cPtr + 2 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc22 = svld1_f32(p32_v2, cPtr + 2 * ldc + 2 * simd_width);
+    }
+    if (M >= 4) {
+        if (N >= 1 * simd_width) 
+            vc30 = svld1_f32(p32_v0, cPtr + 3 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc31 = svld1_f32(p32_v1, cPtr + 3 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc32 = svld1_f32(p32_v2, cPtr + 3 * ldc + 2 * simd_width);
+    }
+    if (M >= 5) {
+        if (N >= 1 * simd_width) 
+            vc40 = svld1_f32(p32_v0, cPtr + 4 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc41 = svld1_f32(p32_v1, cPtr + 4 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc42 = svld1_f32(p32_v2, cPtr + 4 * ldc + 2 * simd_width);
+    }
+    if (M >= 6) {
+        if (N >= 1 * simd_width) 
+            vc50 = svld1_f32(p32_v0, cPtr + 5 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc51 = svld1_f32(p32_v1, cPtr + 5 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc52 = svld1_f32(p32_v2, cPtr + 5 * ldc + 2 * simd_width);
+    }
+    if (M >= 7) {
+        if (N >= 1 * simd_width) 
+            vc60 = svld1_f32(p32_v0, cPtr + 6 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc61 = svld1_f32(p32_v1, cPtr + 6 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc62 = svld1_f32(p32_v2, cPtr + 6 * ldc + 2 * simd_width);
+    }
+    if (M >= 8) {
+        if (N >= 1 * simd_width) 
+            vc70 = svld1_f32(p32_v0, cPtr + 7 * ldc + 0 * simd_width);
+        if (N >= 2 * simd_width)
+            vc71 = svld1_f32(p32_v1, cPtr + 7 * ldc + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vc72 = svld1_f32(p32_v2, cPtr + 7 * ldc + 2 * simd_width);
+    }
+
+    for (int k = 0; k < kc_adjust; k++) {
+        // load B
+        if (N >= 1 * simd_width) 
+            vb0 = svld1_f32(p32_v0, packBPtr);
+        if (N >= 2 * simd_width)
+            vb1 = svld1_f32(p32_v1, packBPtr + 1 * simd_width);
+        if (N >= 3 * simd_width)
+            vb2 = svld1_f32(p32_v2, packBPtr + 2 * simd_width);
+        
+        if (M >= 1) {
+            va0 = svdup_n_f32(packAPtr[0]);
+            if (N >= 1 * simd_width)
+                vc00 = svmla_f32_x(p32_v0, vc00, va0, vb0);
+            if (N >= 2 * simd_width)
+                vc01 = svmla_f32_x(p32_v1, vc01, va0, vb1);
+            if (N >= 3 * simd_width)
+                vc02 = svmla_f32_x(p32_v2, vc02, va0, vb2);
+        }
+        if (M >= 2) {
+            va1 = svdup_n_f32(packAPtr[1]);
+            if (N >= 1 * simd_width)
+                vc10 = svmla_f32_x(p32_v0, vc10, va1, vb0);
+            if (N >= 2 * simd_width)
+                vc11 = svmla_f32_x(p32_v1, vc11, va1, vb1);
+            if (N >= 3 * simd_width)
+                vc12 = svmla_f32_x(p32_v2, vc12, va1, vb2);
+        }
+        if (M >= 3) {
+            va2 = svdup_n_f32(packAPtr[2]);
+            if (N >= 1 * simd_width)
+                vc20 = svmla_f32_x(p32_v0, vc20, va2, vb0);
+            if (N >= 2 * simd_width)
+                vc21 = svmla_f32_x(p32_v1, vc21, va2, vb1);
+            if (N >= 3 * simd_width)
+                vc22 = svmla_f32_x(p32_v2, vc22, va2, vb2);
+        }
+        if (M >= 4) {
+            va3 = svdup_n_f32(packAPtr[3]);
+            if (N >= 1 * simd_width)
+                vc30 = svmla_f32_x(p32_v0, vc30, va3, vb0);
+            if (N >= 2 * simd_width)
+                vc31 = svmla_f32_x(p32_v1, vc31, va3, vb1);
+            if (N >= 3 * simd_width)
+                vc32 = svmla_f32_x(p32_v2, vc32, va3, vb2);
+        }
+        if (M >= 5) {
+            va0 = svdup_n_f32(packAPtr[4]);
+            if (N >= 1 * simd_width)
+                vc40 = svmla_f32_x(p32_v0, vc40, va0, vb0);
+            if (N >= 2 * simd_width)
+                vc41 = svmla_f32_x(p32_v1, vc41, va0, vb1);
+            if (N >= 3 * simd_width)
+                vc42 = svmla_f32_x(p32_v2, vc42, va0, vb2);
+        }
+        if (M >= 6) {
+            va1 = svdup_n_f32(packAPtr[5]);
+            if (N >= 1 * simd_width)
+                vc50 = svmla_f32_x(p32_v0, vc50, va1, vb0);
+            if (N >= 2 * simd_width)
+                vc51 = svmla_f32_x(p32_v1, vc51, va1, vb1);
+            if (N >= 3 * simd_width)
+                vc52 = svmla_f32_x(p32_v2, vc52, va1, vb2);
+        }
+        if (M >= 7) {
+            va2 = svdup_n_f32(packAPtr[6]);
+            if (N >= 1 * simd_width)
+                vc60 = svmla_f32_x(p32_v0, vc60, va2, vb0);
+            if (N >= 2 * simd_width)
+                vc61 = svmla_f32_x(p32_v1, vc61, va2, vb1);
+            if (N >= 3 * simd_width)
+                vc62 = svmla_f32_x(p32_v2, vc62, va2, vb2);
+        }
+        if (M >= 8) {
+            va3 = svdup_n_f32(packAPtr[7]);
+            if (N >= 1 * simd_width)
+                vc70 = svmla_f32_x(p32_v0, vc70, va3, vb0);
+            if (N >= 2 * simd_width)
+                vc71 = svmla_f32_x(p32_v1, vc71, va3, vb1);
+            if (N >= 3 * simd_width)
+                vc72 = svmla_f32_x(p32_v2, vc72, va3, vb2);
+        }
+
+        packAPtr += M;
+        packBPtr += remain_col;
+    }    
+
+    // store C
+    if (M >= 1) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 0 * ldc + 0 * simd_width, vc00);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 0 * ldc + 1 * simd_width, vc01);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 0 * ldc + 2 * simd_width, vc02);
+    }
+    if (M >= 2) {
+        if (N >= 1 * simd_width)
+            svst1_f32(p32_v0, cPtr + 1 * ldc + 0 * simd_width, vc10);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 1 * ldc + 1 * simd_width, vc11);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 1 * ldc + 2 * simd_width, vc12);
+    }
+    if (M >= 3) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 2 * ldc + 0 * simd_width, vc20);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 2 * ldc + 1 * simd_width, vc21);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 2 * ldc + 2 * simd_width, vc22);
+    }
+    if (M >= 4) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 3 * ldc + 0 * simd_width, vc30);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 3 * ldc + 1 * simd_width, vc31);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 3 * ldc + 2 * simd_width, vc32);
+    }
+    if (M >= 5) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 4 * ldc + 0 * simd_width, vc40);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 4 * ldc + 1 * simd_width, vc41);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 4 * ldc + 2 * simd_width, vc42);
+    }
+    if (M >= 6) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 5 * ldc + 0 * simd_width, vc50);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 5 * ldc + 1 * simd_width, vc51);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 5 * ldc + 2 * simd_width, vc52);
+    }
+    if (M >= 7) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 6 * ldc + 0 * simd_width, vc60);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 6 * ldc + 1 * simd_width, vc61);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 6 * ldc + 2 * simd_width, vc62);
+    }
+    if (M >= 8) {
+        if (N >= 1 * simd_width) 
+            svst1_f32(p32_v0, cPtr + 7 * ldc + 0 * simd_width, vc70);
+        if (N >= 2 * simd_width)
+            svst1_f32(p32_v1, cPtr + 7 * ldc + 1 * simd_width, vc71);
+        if (N >= 3 * simd_width)
+            svst1_f32(p32_v2, cPtr + 7 * ldc + 2 * simd_width, vc72);
+    }
+}
+
+const inner_kernel_for_corner_func_t kernel_MxN_for_8x48_func_tab[8][3] = {
+    {
+        kernel_MxN_for_8x48<1, 16>,
+        kernel_MxN_for_8x48<1, 32>,
+        kernel_MxN_for_8x48<1, 48>
+    }, 
+    {
+        kernel_MxN_for_8x48<2, 16>,
+        kernel_MxN_for_8x48<2, 32>,
+        kernel_MxN_for_8x48<2, 48>
+    },
+    {
+        kernel_MxN_for_8x48<3, 16>,
+        kernel_MxN_for_8x48<3, 32>,
+        kernel_MxN_for_8x48<3, 48>
+    },
+    {
+        kernel_MxN_for_8x48<4, 16>,
+        kernel_MxN_for_8x48<4, 32>,
+        kernel_MxN_for_8x48<4, 48>
+    },
+    {
+        kernel_MxN_for_8x48<5, 16>,
+        kernel_MxN_for_8x48<5, 32>,
+        kernel_MxN_for_8x48<5, 48>
+    },
+    {
+        kernel_MxN_for_8x48<6, 16>,
+        kernel_MxN_for_8x48<6, 32>,
+        kernel_MxN_for_8x48<6, 48>
+    },
+    {
+        kernel_MxN_for_8x48<7, 16>,
+        kernel_MxN_for_8x48<7, 32>,
+        kernel_MxN_for_8x48<7, 48>
+    },
+    {
+        kernel_MxN_for_8x48<8, 16>,
+        kernel_MxN_for_8x48<8, 32>,
+        kernel_MxN_for_8x48<8, 48>
+    }
+};
 
 // new version, use broadcast and fmla
 void kernel_14x32(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
