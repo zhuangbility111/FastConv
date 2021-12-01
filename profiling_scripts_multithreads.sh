@@ -3,8 +3,8 @@
 rm -r ./profiling/result/ ./profiling/tmp*
 mkdir ./profiling/result
 
-export GOMP_CPU_AFFINITY="12-13"
-export OMP_NUM_THREADS=2
+export GOMP_CPU_AFFINITY="12"
+export OMP_NUM_THREADS=1
 
 for ((i=1; i<=${1}; i++))
 do

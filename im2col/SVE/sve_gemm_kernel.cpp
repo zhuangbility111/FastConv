@@ -1022,6 +1022,14 @@ void kernel_12x32_v2(int kc_adjust, float *packA, float* packB, float *packC, in
         "cmp    w5, #0  \n"
         "b.eq   3f      \n"
 
+        "mov    x8, 0x2     \n"
+        "lsl    x8, x8, #56 \n"
+        "orr    %[pC0], %[pC0], x8 \n"
+
+        "mov    x8, 0x1     \n"
+        "lsl    x8, x8, #56 \n"
+        "orr    %[pB], %[pB], x8 \n"
+
 		//"add	%[pC0], %[pC0], 256*2 \n"
 		//"prfm	pstl1keep, [%[pC0]] \n"
 		//"sub	%[pC0], %[pC0], 256*2 \n"
@@ -1293,7 +1301,7 @@ void kernel_12x32_v2(int kc_adjust, float *packA, float* packB, float *packC, in
       [preA]"r"(PREFETCH_A),
       [preB]"r"(PREFETCH_B),
       [preC]"r"(PREFETCH_C)
-    : "memory", "cc", "p0", "x4", "x5", "x6", "x7",
+    : "memory", "cc", "p0", "x4", "x5", "x6", "x7","x8",
       "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
       "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
       "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
@@ -1502,8 +1510,8 @@ void kernel_12x32_v2(int kc_adjust, float *packA, float* packB, float *packC, in
 }
 
 template <int M, int N>
-void kernel_MxN_for_12x32(int kc_adjust, float *packA, float *packB, float *packC, int ldc, int remain_col,
-                            svbool_t p32_v0, svbool_t p32_v1, svbool_t p32_v2) {
+void kernel_MxN_for_12x32(int kc_adjust, float *packA, float *packB, float *packC, int lda, int ldc, int remain_col,
+                            svbool_t* pg32) {
     float* packAPtr = packA;
     float* packBPtr = packB;
     float* cPtr = packC;
@@ -1522,8 +1530,8 @@ void kernel_MxN_for_12x32(int kc_adjust, float *packA, float *packB, float *pack
     svfloat32_t vc90,  vc91;
     svfloat32_t vc100, vc101;
     svfloat32_t vc110, vc111;
-    svfloat32_t vc120, vc121;
-    svfloat32_t vc130, vc131;
+
+    svbool_t p32_v0 = pg32[0], p32_v1 = pg32[1];
 
     // load C
     if (M >= 1) {
@@ -2280,8 +2288,8 @@ void kernel_8x48(int kc_adjust, float *packA, float* packB, float *packC, int ld
 }
 
 template <int M, int N>
-void kernel_MxN_for_8x48(int kc_adjust, float *packA, float *packB, float *packC, int ldc, int remain_col,
-                            svbool_t p32_v0, svbool_t p32_v1, svbool_t p32_v2) {
+void kernel_MxN_for_8x48(int kc_adjust, float *packA, float *packB, float *packC, int lda, int ldc, int remain_col,
+                            svbool_t* pg32) {
     float* packAPtr = packA;
     float* packBPtr = packB;
     float* cPtr = packC;
@@ -2296,6 +2304,8 @@ void kernel_MxN_for_8x48(int kc_adjust, float *packA, float *packB, float *packC
     svfloat32_t vc50, vc51, vc52;
     svfloat32_t vc60, vc61, vc62;
     svfloat32_t vc70, vc71, vc72;
+
+    svbool_t p32_v0 = pg32[0], p32_v1 = pg32[1], p32_v2 = pg32[2];
 
     // load C
     if (M >= 1) {
@@ -2760,475 +2770,473 @@ void kernel_14x32(int kc_adjust, float *packA, float* packB, float *packC, int l
 #endif
 }
 
+// template <int N>
+// void kernel_Nx32_template(int kc_adjust, float *packA, float *packB, float *packC, int ldc)
+// {
+//     float* packAPtr = packA;
+//     float* packBPtr = packB;
+//     float* cPtr = packC;
+
+//     const svbool_t p32_all = svptrue_b32();
+
+//     svfloat32_t va;
+//     svfloat32_t vb0,   vb1;
+//     svfloat32_t vc00,  vc01;
+//     svfloat32_t vc10,  vc11;
+//     svfloat32_t vc20,  vc21;
+//     svfloat32_t vc30,  vc31;
+//     svfloat32_t vc40,  vc41;
+//     svfloat32_t vc50,  vc51;
+//     svfloat32_t vc60,  vc61;
+//     svfloat32_t vc70,  vc71;
+//     svfloat32_t vc80,  vc81;
+//     svfloat32_t vc90,  vc91;
+//     svfloat32_t vc100, vc101;
+//     svfloat32_t vc110, vc111;
+//     svfloat32_t vc120, vc121;
+//     svfloat32_t vc130, vc131;
+
+//     if (N > 0)
+//     {
+//         vc00  = svld1_f32(p32_all, cPtr);
+//         vc01  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc;
+//     }
+//     if (N > 1)
+//     {
+//         vc10  = svld1_f32(p32_all, cPtr);
+//         vc11  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc;
+//     }
+//     if (N > 2)
+//     {
+//         vc20  = svld1_f32(p32_all, cPtr);
+//         vc21  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 3)
+//     {
+//         vc30  = svld1_f32(p32_all, cPtr);
+//         vc31  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 4)
+//     {
+//         vc40  = svld1_f32(p32_all, cPtr);
+//         vc41  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 5)
+//     {
+//         vc50  = svld1_f32(p32_all, cPtr);
+//         vc51  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 6) 
+//     {
+//         vc60  = svld1_f32(p32_all, cPtr);
+//         vc61  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 7)
+//     {
+//         vc70  = svld1_f32(p32_all, cPtr);
+//         vc71  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 8)
+//     {
+//         vc80  = svld1_f32(p32_all, cPtr);
+//         vc81  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 9)
+//     {
+//         vc90  = svld1_f32(p32_all, cPtr);
+//         vc91  = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 10)
+//     {
+//         vc100 = svld1_f32(p32_all, cPtr);
+//         vc101 = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 11)
+//     {
+//         vc110 = svld1_f32(p32_all, cPtr);
+//         vc111 = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 12)
+//     {
+//         vc110 = svld1_f32(p32_all, cPtr);
+//         vc111 = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 13)
+//     {
+//         vc120 = svld1_f32(p32_all, cPtr);
+//         vc121 = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+//     if (N > 14)
+//     {
+//         vc130 = svld1_f32(p32_all, cPtr);
+//         vc131 = svld1_f32(p32_all, cPtr + 16);
+//         cPtr += ldc; 
+//     }
+
+//     // to-do
+//     for (int p = 0; p < kc_adjust; p++)
+//     {
+//         vb0 = svld1_f32(p32_all, packBPtr);
+//         vb1 = svld1_f32(p32_all, packBPtr + 16);
+
+//         if (N > 0)
+//         {
+//             va   = svdup_n_f32(packAPtr[0]);
+//             vc00 = svmla_f32_x(p32_all, vc00, va, vb0); 
+//             vc01 = svmla_f32_x(p32_all, vc01, va, vb1); 
+//         }
+//         if (N > 1)
+//         {
+//             va   = svdup_n_f32(packAPtr[1]);
+//             vc10 = svmla_f32_x(p32_all, vc10, va, vb0); 
+//             vc11 = svmla_f32_x(p32_all, vc11, va, vb1); 
+//         }
+//         if (N > 2)
+//         {
+//             va   = svdup_n_f32(packAPtr[2]);
+//             vc20 = svmla_f32_x(p32_all, vc20, va, vb0); 
+//             vc21 = svmla_f32_x(p32_all, vc21, va, vb1); 
+//         }
+//         if (N > 3)
+//         {
+//             va   = svdup_n_f32(packAPtr[3]);
+//             vc30 = svmla_f32_x(p32_all, vc30, va, vb0); 
+//             vc31 = svmla_f32_x(p32_all, vc31, va, vb1); 
+//         }
+//         if (N > 4)
+//         {
+//             va   = svdup_n_f32(packAPtr[4]);
+//             vc40 = svmla_f32_x(p32_all, vc40, va, vb0); 
+//             vc41 = svmla_f32_x(p32_all, vc41, va, vb1); 
+//         }
+//         if (N > 5)
+//         {
+//             va   = svdup_n_f32(packAPtr[5]);
+//             vc50 = svmla_f32_x(p32_all, vc50, va, vb0); 
+//             vc51 = svmla_f32_x(p32_all, vc51, va, vb1); 
+//         }
+//         if (N > 6)
+//         {
+//             va  = svdup_n_f32(packAPtr[6]);
+//             vc60 = svmla_f32_x(p32_all, vc60, va, vb0); 
+//             vc61 = svmla_f32_x(p32_all, vc61, va, vb1); 
+//         }
+//         if (N > 7)
+//         {
+//             va   = svdup_n_f32(packAPtr[7]);
+//             vc70 = svmla_f32_x(p32_all, vc70, va, vb0); 
+//             vc71 = svmla_f32_x(p32_all, vc71, va, vb1); 
+//         }
+//         if (N > 8)
+//         {
+//             va   = svdup_n_f32(packAPtr[8]);
+//             vc80 = svmla_f32_x(p32_all, vc80, va, vb0); 
+//             vc81 = svmla_f32_x(p32_all, vc81, va, vb1); 
+//         }
+//         if (N > 9)
+//         {
+//             va   = svdup_n_f32(packAPtr[9]);
+//             vc90 = svmla_f32_x(p32_all, vc90, va, vb0); 
+//             vc91 = svmla_f32_x(p32_all, vc91, va, vb1); 
+//         }
+//         if (N > 10)
+//         {
+//             va    = svdup_n_f32(packAPtr[10]);
+//             vc100 = svmla_f32_x(p32_all, vc100, va, vb0); 
+//             vc101 = svmla_f32_x(p32_all, vc101, va, vb1); 
+//         }
+//         if (N > 11)
+//         {
+//             va    = svdup_n_f32(packAPtr[11]);
+//             vc110 = svmla_f32_x(p32_all, vc110, va, vb0); 
+//             vc111 = svmla_f32_x(p32_all, vc111, va, vb1); 
+//         }
+//         if (N > 12)
+//         {
+//             va    = svdup_n_f32(packAPtr[12]);
+//             vc110 = svmla_f32_x(p32_all, vc120, va, vb0); 
+//             vc111 = svmla_f32_x(p32_all, vc121, va, vb1); 
+//         }
+//         if (N > 13)
+//         {
+//             va    = svdup_n_f32(packAPtr[13]);
+//             vc110 = svmla_f32_x(p32_all, vc130, va, vb0); 
+//             vc111 = svmla_f32_x(p32_all, vc131, va, vb1); 
+//         }
 
 
-template <int N>
-void kernel_Nx32_template(int kc_adjust, float *packA, float *packB, float *packC, int ldc)
-{
-    float* packAPtr = packA;
-    float* packBPtr = packB;
-    float* cPtr = packC;
+//         packBPtr += 32;
+//         packAPtr += N;
+//     }
 
-    const svbool_t p32_all = svptrue_b32();
+//     // 将结果写回
+//     cPtr = packC;
+//     if (N > 0)
+//     {
+//         svst1_f32(p32_all, cPtr, vc00);
+//         svst1_f32(p32_all, cPtr + 16, vc01);
+//         cPtr += ldc;
+//     }
+//     if (N > 1)
+//     {
+//         svst1_f32(p32_all, cPtr, vc10);
+//         svst1_f32(p32_all, cPtr + 16, vc11);
+//         cPtr += ldc;
+//     }
+//     if (N > 2)
+//     {
+//         svst1_f32(p32_all, cPtr, vc20);
+//         svst1_f32(p32_all, cPtr + 16, vc21);
+//         cPtr += ldc;
+//     }
+//     if (N > 3)
+//     {
+//         svst1_f32(p32_all, cPtr, vc30);
+//         svst1_f32(p32_all, cPtr + 16, vc31);
+//         cPtr += ldc;
+//     }
+//     if (N > 4)
+//     {
+//         svst1_f32(p32_all, cPtr, vc40);
+//         svst1_f32(p32_all, cPtr + 16, vc41);
+//         cPtr += ldc;
+//     }
+//     if (N > 5)
+//     {
+//         svst1_f32(p32_all, cPtr, vc50);
+//         svst1_f32(p32_all, cPtr + 16, vc51);
+//         cPtr += ldc;
+//     }
+//     if (N > 6)
+//     {
+//         svst1_f32(p32_all, cPtr, vc60);
+//         svst1_f32(p32_all, cPtr + 16, vc61);
+//         cPtr += ldc;
+//     }
+//     if (N > 7)
+//     {
+//         svst1_f32(p32_all, cPtr, vc70);
+//         svst1_f32(p32_all, cPtr + 16, vc71);
+//         cPtr += ldc;
+//     }
+//     if (N > 8)
+//     {
+//         svst1_f32(p32_all, cPtr, vc80);
+//         svst1_f32(p32_all, cPtr + 16, vc81);
+//         cPtr += ldc;
+//     }
+//     if (N > 9)
+//     {
+//         svst1_f32(p32_all, cPtr, vc90);
+//         svst1_f32(p32_all, cPtr + 16, vc91);
+//         cPtr += ldc;
+//     }
+//     if (N > 10)
+//     {
+//         svst1_f32(p32_all, cPtr, vc100);
+//         svst1_f32(p32_all, cPtr + 16, vc101);
+//         cPtr += ldc;
+//     }
+//     if (N > 11)
+//     {
+//         svst1_f32(p32_all, cPtr, vc110);
+//         svst1_f32(p32_all, cPtr + 16, vc111);
+//         cPtr += ldc;
+//     }
+//     if (N > 12)
+//     {
+//         svst1_f32(p32_all, cPtr, vc120);
+//         svst1_f32(p32_all, cPtr + 16, vc121);
+//         cPtr += ldc;
+//     }
+//     if (N > 13)
+//     {
+//         svst1_f32(p32_all, cPtr, vc130);
+//         svst1_f32(p32_all, cPtr + 16, vc131);
+//         cPtr += ldc;
+//     }
+// }
 
-    svfloat32_t va;
-    svfloat32_t vb0,   vb1;
-    svfloat32_t vc00,  vc01;
-    svfloat32_t vc10,  vc11;
-    svfloat32_t vc20,  vc21;
-    svfloat32_t vc30,  vc31;
-    svfloat32_t vc40,  vc41;
-    svfloat32_t vc50,  vc51;
-    svfloat32_t vc60,  vc61;
-    svfloat32_t vc70,  vc71;
-    svfloat32_t vc80,  vc81;
-    svfloat32_t vc90,  vc91;
-    svfloat32_t vc100, vc101;
-    svfloat32_t vc110, vc111;
-    svfloat32_t vc120, vc121;
-    svfloat32_t vc130, vc131;
+// InnerKernelForCorner get_kernel_Nx32(int k) {
+//     if (k == 1)
+//         return kernel_Nx32_template<1>;
+//     else if (k == 2)
+//         return kernel_Nx32_template<2>;
+//     else if (k == 3)
+//         return kernel_Nx32_template<3>;
+//     else if (k == 4)
+//         return kernel_Nx32_template<4>;
+//     else if (k == 5)
+//         return kernel_Nx32_template<5>;
+//     else if (k == 6)
+//         return kernel_Nx32_template<6>;
+//     else if (k == 7)
+//         return kernel_Nx32_template<7>;
+//     else if (k == 8)
+//         return kernel_Nx32_template<8>;
+//     else if (k == 9)
+//         return kernel_Nx32_template<9>;
+//     else if (k == 10)
+//         return kernel_Nx32_template<10>;
+//     else if (k == 11)
+//         return kernel_Nx32_template<11>;
+//     else if (k == 12)
+//         return kernel_Nx32_template<12>;
+//     else if (k == 13)
+//         return kernel_Nx32_template<13>;
+//     return kernel_Nx32_template<14>;
+// }
 
-    if (N > 0)
-    {
-        vc00  = svld1_f32(p32_all, cPtr);
-        vc01  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc;
-    }
-    if (N > 1)
-    {
-        vc10  = svld1_f32(p32_all, cPtr);
-        vc11  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc;
-    }
-    if (N > 2)
-    {
-        vc20  = svld1_f32(p32_all, cPtr);
-        vc21  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 3)
-    {
-        vc30  = svld1_f32(p32_all, cPtr);
-        vc31  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 4)
-    {
-        vc40  = svld1_f32(p32_all, cPtr);
-        vc41  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 5)
-    {
-        vc50  = svld1_f32(p32_all, cPtr);
-        vc51  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 6) 
-    {
-        vc60  = svld1_f32(p32_all, cPtr);
-        vc61  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 7)
-    {
-        vc70  = svld1_f32(p32_all, cPtr);
-        vc71  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 8)
-    {
-        vc80  = svld1_f32(p32_all, cPtr);
-        vc81  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 9)
-    {
-        vc90  = svld1_f32(p32_all, cPtr);
-        vc91  = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 10)
-    {
-        vc100 = svld1_f32(p32_all, cPtr);
-        vc101 = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 11)
-    {
-        vc110 = svld1_f32(p32_all, cPtr);
-        vc111 = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 12)
-    {
-        vc110 = svld1_f32(p32_all, cPtr);
-        vc111 = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 13)
-    {
-        vc120 = svld1_f32(p32_all, cPtr);
-        vc121 = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
-    if (N > 14)
-    {
-        vc130 = svld1_f32(p32_all, cPtr);
-        vc131 = svld1_f32(p32_all, cPtr + 16);
-        cPtr += ldc; 
-    }
+// template <int N>
+// void kernel_Nx64_template(int kc_adjust, float *packA, float *packB, float *packC, int ldc)
+// {
+//     float* packAPtr = packA;
+//     float* packBPtr = packB;
+//     float* cPtr = packC;
 
-    // to-do
-    for (int p = 0; p < kc_adjust; p++)
-    {
-        vb0 = svld1_f32(p32_all, packBPtr);
-        vb1 = svld1_f32(p32_all, packBPtr + 16);
+//     const svbool_t p32_all = svptrue_b32();
 
-        if (N > 0)
-        {
-            va   = svdup_n_f32(packAPtr[0]);
-            vc00 = svmla_f32_x(p32_all, vc00, va, vb0); 
-            vc01 = svmla_f32_x(p32_all, vc01, va, vb1); 
-        }
-        if (N > 1)
-        {
-            va   = svdup_n_f32(packAPtr[1]);
-            vc10 = svmla_f32_x(p32_all, vc10, va, vb0); 
-            vc11 = svmla_f32_x(p32_all, vc11, va, vb1); 
-        }
-        if (N > 2)
-        {
-            va   = svdup_n_f32(packAPtr[2]);
-            vc20 = svmla_f32_x(p32_all, vc20, va, vb0); 
-            vc21 = svmla_f32_x(p32_all, vc21, va, vb1); 
-        }
-        if (N > 3)
-        {
-            va   = svdup_n_f32(packAPtr[3]);
-            vc30 = svmla_f32_x(p32_all, vc30, va, vb0); 
-            vc31 = svmla_f32_x(p32_all, vc31, va, vb1); 
-        }
-        if (N > 4)
-        {
-            va   = svdup_n_f32(packAPtr[4]);
-            vc40 = svmla_f32_x(p32_all, vc40, va, vb0); 
-            vc41 = svmla_f32_x(p32_all, vc41, va, vb1); 
-        }
-        if (N > 5)
-        {
-            va   = svdup_n_f32(packAPtr[5]);
-            vc50 = svmla_f32_x(p32_all, vc50, va, vb0); 
-            vc51 = svmla_f32_x(p32_all, vc51, va, vb1); 
-        }
-        if (N > 6)
-        {
-            va  = svdup_n_f32(packAPtr[6]);
-            vc60 = svmla_f32_x(p32_all, vc60, va, vb0); 
-            vc61 = svmla_f32_x(p32_all, vc61, va, vb1); 
-        }
-        if (N > 7)
-        {
-            va   = svdup_n_f32(packAPtr[7]);
-            vc70 = svmla_f32_x(p32_all, vc70, va, vb0); 
-            vc71 = svmla_f32_x(p32_all, vc71, va, vb1); 
-        }
-        if (N > 8)
-        {
-            va   = svdup_n_f32(packAPtr[8]);
-            vc80 = svmla_f32_x(p32_all, vc80, va, vb0); 
-            vc81 = svmla_f32_x(p32_all, vc81, va, vb1); 
-        }
-        if (N > 9)
-        {
-            va   = svdup_n_f32(packAPtr[9]);
-            vc90 = svmla_f32_x(p32_all, vc90, va, vb0); 
-            vc91 = svmla_f32_x(p32_all, vc91, va, vb1); 
-        }
-        if (N > 10)
-        {
-            va    = svdup_n_f32(packAPtr[10]);
-            vc100 = svmla_f32_x(p32_all, vc100, va, vb0); 
-            vc101 = svmla_f32_x(p32_all, vc101, va, vb1); 
-        }
-        if (N > 11)
-        {
-            va    = svdup_n_f32(packAPtr[11]);
-            vc110 = svmla_f32_x(p32_all, vc110, va, vb0); 
-            vc111 = svmla_f32_x(p32_all, vc111, va, vb1); 
-        }
-        if (N > 12)
-        {
-            va    = svdup_n_f32(packAPtr[12]);
-            vc110 = svmla_f32_x(p32_all, vc120, va, vb0); 
-            vc111 = svmla_f32_x(p32_all, vc121, va, vb1); 
-        }
-        if (N > 13)
-        {
-            va    = svdup_n_f32(packAPtr[13]);
-            vc110 = svmla_f32_x(p32_all, vc130, va, vb0); 
-            vc111 = svmla_f32_x(p32_all, vc131, va, vb1); 
-        }
+//     svfloat32_t va0,  va1,  va2,  va3;
+//     svfloat32_t vb0,  vb1,  vb2,  vb3;
+//     svfloat32_t vc00, vc01, vc02, vc03;
+//     svfloat32_t vc10, vc11, vc12, vc13;
+//     svfloat32_t vc20, vc21, vc22, vc23;
+//     svfloat32_t vc30, vc31, vc32, vc33;
 
+//     if (N > 0)
+//     {
+//         vc00  = svld1_f32(p32_all, cPtr);
+//         vc01  = svld1_f32(p32_all, cPtr + 16);
+//         vc02  = svld1_f32(p32_all, cPtr + 32);
+//         vc03  = svld1_f32(p32_all, cPtr + 48);
+//         cPtr += ldc;
+//     }
+//     if (N > 1)
+//     {
+//         vc10  = svld1_f32(p32_all, cPtr);
+//         vc11  = svld1_f32(p32_all, cPtr + 16);
+//         vc12  = svld1_f32(p32_all, cPtr + 32);
+//         vc13  = svld1_f32(p32_all, cPtr + 48);
+//         cPtr += ldc;
+//     }
+//     if (N > 2)
+//     {
+//         vc20  = svld1_f32(p32_all, cPtr);
+//         vc21  = svld1_f32(p32_all, cPtr + 16);
+//         vc22  = svld1_f32(p32_all, cPtr + 32);
+//         vc23  = svld1_f32(p32_all, cPtr + 48);
+//         cPtr += ldc; 
+//     }
+//     if (N > 3)
+//     {
+//         vc30  = svld1_f32(p32_all, cPtr);
+//         vc31  = svld1_f32(p32_all, cPtr + 16);
+//         vc32  = svld1_f32(p32_all, cPtr + 32);
+//         vc33  = svld1_f32(p32_all, cPtr + 48);
+//         cPtr += ldc; 
+//     }
 
-        packBPtr += 32;
-        packAPtr += N;
-    }
+//     // to-do
+//     for (int p = 0; p < kc_adjust; p++)
+//     {
+//         vb0 = svld1_f32(p32_all, packBPtr);
+//         vb1 = svld1_f32(p32_all, packBPtr + 16);
+//         vb2 = svld1_f32(p32_all, packBPtr + 32);
+//         vb3 = svld1_f32(p32_all, packBPtr + 48);
 
-    // 将结果写回
-    cPtr = packC;
-    if (N > 0)
-    {
-        svst1_f32(p32_all, cPtr, vc00);
-        svst1_f32(p32_all, cPtr + 16, vc01);
-        cPtr += ldc;
-    }
-    if (N > 1)
-    {
-        svst1_f32(p32_all, cPtr, vc10);
-        svst1_f32(p32_all, cPtr + 16, vc11);
-        cPtr += ldc;
-    }
-    if (N > 2)
-    {
-        svst1_f32(p32_all, cPtr, vc20);
-        svst1_f32(p32_all, cPtr + 16, vc21);
-        cPtr += ldc;
-    }
-    if (N > 3)
-    {
-        svst1_f32(p32_all, cPtr, vc30);
-        svst1_f32(p32_all, cPtr + 16, vc31);
-        cPtr += ldc;
-    }
-    if (N > 4)
-    {
-        svst1_f32(p32_all, cPtr, vc40);
-        svst1_f32(p32_all, cPtr + 16, vc41);
-        cPtr += ldc;
-    }
-    if (N > 5)
-    {
-        svst1_f32(p32_all, cPtr, vc50);
-        svst1_f32(p32_all, cPtr + 16, vc51);
-        cPtr += ldc;
-    }
-    if (N > 6)
-    {
-        svst1_f32(p32_all, cPtr, vc60);
-        svst1_f32(p32_all, cPtr + 16, vc61);
-        cPtr += ldc;
-    }
-    if (N > 7)
-    {
-        svst1_f32(p32_all, cPtr, vc70);
-        svst1_f32(p32_all, cPtr + 16, vc71);
-        cPtr += ldc;
-    }
-    if (N > 8)
-    {
-        svst1_f32(p32_all, cPtr, vc80);
-        svst1_f32(p32_all, cPtr + 16, vc81);
-        cPtr += ldc;
-    }
-    if (N > 9)
-    {
-        svst1_f32(p32_all, cPtr, vc90);
-        svst1_f32(p32_all, cPtr + 16, vc91);
-        cPtr += ldc;
-    }
-    if (N > 10)
-    {
-        svst1_f32(p32_all, cPtr, vc100);
-        svst1_f32(p32_all, cPtr + 16, vc101);
-        cPtr += ldc;
-    }
-    if (N > 11)
-    {
-        svst1_f32(p32_all, cPtr, vc110);
-        svst1_f32(p32_all, cPtr + 16, vc111);
-        cPtr += ldc;
-    }
-    if (N > 12)
-    {
-        svst1_f32(p32_all, cPtr, vc120);
-        svst1_f32(p32_all, cPtr + 16, vc121);
-        cPtr += ldc;
-    }
-    if (N > 13)
-    {
-        svst1_f32(p32_all, cPtr, vc130);
-        svst1_f32(p32_all, cPtr + 16, vc131);
-        cPtr += ldc;
-    }
-}
+//         if (N > 0)
+//         {
+//             va0  = svdup_n_f32(packAPtr[0]);
+//             vc00 = svmla_f32_x(p32_all, vc00, va0, vb0); 
+//             vc01 = svmla_f32_x(p32_all, vc01, va0, vb1); 
+//             vc02 = svmla_f32_x(p32_all, vc02, va0, vb2); 
+//             vc03 = svmla_f32_x(p32_all, vc03, va0, vb3); 
+//         }
+//         if (N > 1)
+//         {
+//             va1  = svdup_n_f32(packAPtr[1]);
+//             vc10 = svmla_f32_x(p32_all, vc10, va1, vb0); 
+//             vc11 = svmla_f32_x(p32_all, vc11, va1, vb1); 
+//             vc12 = svmla_f32_x(p32_all, vc12, va1, vb2); 
+//             vc13 = svmla_f32_x(p32_all, vc13, va1, vb3); 
+//         }
+//         if (N > 2)
+//         {
+//             va2  = svdup_n_f32(packAPtr[2]);
+//             vc20 = svmla_f32_x(p32_all, vc20, va2, vb0); 
+//             vc21 = svmla_f32_x(p32_all, vc21, va2, vb1); 
+//             vc22 = svmla_f32_x(p32_all, vc22, va2, vb2); 
+//             vc23 = svmla_f32_x(p32_all, vc23, va2, vb3); 
+//         }
+//         if (N > 3)
+//         {
+//             va3  = svdup_n_f32(packAPtr[3]);
+//             vc30 = svmla_f32_x(p32_all, vc30, va3, vb0); 
+//             vc31 = svmla_f32_x(p32_all, vc31, va3, vb1); 
+//             vc32 = svmla_f32_x(p32_all, vc32, va3, vb2); 
+//             vc33 = svmla_f32_x(p32_all, vc33, va3, vb3); 
+//         }
 
-InnerKernelForCorner get_kernel_Nx32(int k) {
-    if (k == 1)
-        return kernel_Nx32_template<1>;
-    else if (k == 2)
-        return kernel_Nx32_template<2>;
-    else if (k == 3)
-        return kernel_Nx32_template<3>;
-    else if (k == 4)
-        return kernel_Nx32_template<4>;
-    else if (k == 5)
-        return kernel_Nx32_template<5>;
-    else if (k == 6)
-        return kernel_Nx32_template<6>;
-    else if (k == 7)
-        return kernel_Nx32_template<7>;
-    else if (k == 8)
-        return kernel_Nx32_template<8>;
-    else if (k == 9)
-        return kernel_Nx32_template<9>;
-    else if (k == 10)
-        return kernel_Nx32_template<10>;
-    else if (k == 11)
-        return kernel_Nx32_template<11>;
-    else if (k == 12)
-        return kernel_Nx32_template<12>;
-    else if (k == 13)
-        return kernel_Nx32_template<13>;
-    return kernel_Nx32_template<14>;
-}
+//         packBPtr += 64;
+//         packAPtr += N;
+//     }
 
-template <int N>
-void kernel_Nx64_template(int kc_adjust, float *packA, float *packB, float *packC, int ldc)
-{
-    float* packAPtr = packA;
-    float* packBPtr = packB;
-    float* cPtr = packC;
+//     // 将结果写回
+//     cPtr = packC;
+//     if (N > 0)
+//     {
+//         svst1_f32(p32_all, cPtr, vc00);
+//         svst1_f32(p32_all, cPtr + 16, vc01);
+//         svst1_f32(p32_all, cPtr + 32, vc02);
+//         svst1_f32(p32_all, cPtr + 48, vc03);
+//         cPtr += ldc;
+//     }
+//     if (N > 1)
+//     {
+//         svst1_f32(p32_all, cPtr, vc10);
+//         svst1_f32(p32_all, cPtr + 16, vc11);
+//         svst1_f32(p32_all, cPtr + 32, vc12);
+//         svst1_f32(p32_all, cPtr + 48, vc13);
+//         cPtr += ldc;
+//     }
+//     if (N > 2)
+//     {
+//         svst1_f32(p32_all, cPtr, vc20);
+//         svst1_f32(p32_all, cPtr + 16, vc21);
+//         svst1_f32(p32_all, cPtr + 32, vc22);
+//         svst1_f32(p32_all, cPtr + 48, vc23);
+//         cPtr += ldc;
+//     }
+//     if (N > 3)
+//     {
+//         svst1_f32(p32_all, cPtr, vc30);
+//         svst1_f32(p32_all, cPtr + 16, vc31);
+//         svst1_f32(p32_all, cPtr + 32, vc32);
+//         svst1_f32(p32_all, cPtr + 48, vc33);
+//         cPtr += ldc;
+//     }
+// }
 
-    const svbool_t p32_all = svptrue_b32();
-
-    svfloat32_t va0,  va1,  va2,  va3;
-    svfloat32_t vb0,  vb1,  vb2,  vb3;
-    svfloat32_t vc00, vc01, vc02, vc03;
-    svfloat32_t vc10, vc11, vc12, vc13;
-    svfloat32_t vc20, vc21, vc22, vc23;
-    svfloat32_t vc30, vc31, vc32, vc33;
-
-    if (N > 0)
-    {
-        vc00  = svld1_f32(p32_all, cPtr);
-        vc01  = svld1_f32(p32_all, cPtr + 16);
-        vc02  = svld1_f32(p32_all, cPtr + 32);
-        vc03  = svld1_f32(p32_all, cPtr + 48);
-        cPtr += ldc;
-    }
-    if (N > 1)
-    {
-        vc10  = svld1_f32(p32_all, cPtr);
-        vc11  = svld1_f32(p32_all, cPtr + 16);
-        vc12  = svld1_f32(p32_all, cPtr + 32);
-        vc13  = svld1_f32(p32_all, cPtr + 48);
-        cPtr += ldc;
-    }
-    if (N > 2)
-    {
-        vc20  = svld1_f32(p32_all, cPtr);
-        vc21  = svld1_f32(p32_all, cPtr + 16);
-        vc22  = svld1_f32(p32_all, cPtr + 32);
-        vc23  = svld1_f32(p32_all, cPtr + 48);
-        cPtr += ldc; 
-    }
-    if (N > 3)
-    {
-        vc30  = svld1_f32(p32_all, cPtr);
-        vc31  = svld1_f32(p32_all, cPtr + 16);
-        vc32  = svld1_f32(p32_all, cPtr + 32);
-        vc33  = svld1_f32(p32_all, cPtr + 48);
-        cPtr += ldc; 
-    }
-
-    // to-do
-    for (int p = 0; p < kc_adjust; p++)
-    {
-        vb0 = svld1_f32(p32_all, packBPtr);
-        vb1 = svld1_f32(p32_all, packBPtr + 16);
-        vb2 = svld1_f32(p32_all, packBPtr + 32);
-        vb3 = svld1_f32(p32_all, packBPtr + 48);
-
-        if (N > 0)
-        {
-            va0  = svdup_n_f32(packAPtr[0]);
-            vc00 = svmla_f32_x(p32_all, vc00, va0, vb0); 
-            vc01 = svmla_f32_x(p32_all, vc01, va0, vb1); 
-            vc02 = svmla_f32_x(p32_all, vc02, va0, vb2); 
-            vc03 = svmla_f32_x(p32_all, vc03, va0, vb3); 
-        }
-        if (N > 1)
-        {
-            va1  = svdup_n_f32(packAPtr[1]);
-            vc10 = svmla_f32_x(p32_all, vc10, va1, vb0); 
-            vc11 = svmla_f32_x(p32_all, vc11, va1, vb1); 
-            vc12 = svmla_f32_x(p32_all, vc12, va1, vb2); 
-            vc13 = svmla_f32_x(p32_all, vc13, va1, vb3); 
-        }
-        if (N > 2)
-        {
-            va2  = svdup_n_f32(packAPtr[2]);
-            vc20 = svmla_f32_x(p32_all, vc20, va2, vb0); 
-            vc21 = svmla_f32_x(p32_all, vc21, va2, vb1); 
-            vc22 = svmla_f32_x(p32_all, vc22, va2, vb2); 
-            vc23 = svmla_f32_x(p32_all, vc23, va2, vb3); 
-        }
-        if (N > 3)
-        {
-            va3  = svdup_n_f32(packAPtr[3]);
-            vc30 = svmla_f32_x(p32_all, vc30, va3, vb0); 
-            vc31 = svmla_f32_x(p32_all, vc31, va3, vb1); 
-            vc32 = svmla_f32_x(p32_all, vc32, va3, vb2); 
-            vc33 = svmla_f32_x(p32_all, vc33, va3, vb3); 
-        }
-
-        packBPtr += 64;
-        packAPtr += N;
-    }
-
-    // 将结果写回
-    cPtr = packC;
-    if (N > 0)
-    {
-        svst1_f32(p32_all, cPtr, vc00);
-        svst1_f32(p32_all, cPtr + 16, vc01);
-        svst1_f32(p32_all, cPtr + 32, vc02);
-        svst1_f32(p32_all, cPtr + 48, vc03);
-        cPtr += ldc;
-    }
-    if (N > 1)
-    {
-        svst1_f32(p32_all, cPtr, vc10);
-        svst1_f32(p32_all, cPtr + 16, vc11);
-        svst1_f32(p32_all, cPtr + 32, vc12);
-        svst1_f32(p32_all, cPtr + 48, vc13);
-        cPtr += ldc;
-    }
-    if (N > 2)
-    {
-        svst1_f32(p32_all, cPtr, vc20);
-        svst1_f32(p32_all, cPtr + 16, vc21);
-        svst1_f32(p32_all, cPtr + 32, vc22);
-        svst1_f32(p32_all, cPtr + 48, vc23);
-        cPtr += ldc;
-    }
-    if (N > 3)
-    {
-        svst1_f32(p32_all, cPtr, vc30);
-        svst1_f32(p32_all, cPtr + 16, vc31);
-        svst1_f32(p32_all, cPtr + 32, vc32);
-        svst1_f32(p32_all, cPtr + 48, vc33);
-        cPtr += ldc;
-    }
-}
-
-InnerKernelForCorner get_kernel_Nx64(int k) {
-    if (k == 1)
-        return kernel_Nx64_template<1>;
-    else if (k == 2)
-        return kernel_Nx64_template<2>;
-    else if (k == 3)
-        return kernel_Nx64_template<3>;
-    return kernel_Nx64_template<4>;
-}
+// InnerKernelForCorner get_kernel_Nx64(int k) {
+//     if (k == 1)
+//         return kernel_Nx64_template<1>;
+//     else if (k == 2)
+//         return kernel_Nx64_template<2>;
+//     else if (k == 3)
+//         return kernel_Nx64_template<3>;
+//     return kernel_Nx64_template<4>;
+// }

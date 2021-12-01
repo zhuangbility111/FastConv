@@ -6,6 +6,7 @@
 // #include "../im2col/NEON/neon_gemm_kernel.h"
 #include "../im2col/SVE/sve_gemm_pack.h"
 #include "../im2col/SVE/sve_gemm_kernel.h"
+#include "../im2col/SVE/sve_gemm_kernel_no_packa.h"
 
 
 class ConvIm2colLayer : public ConvLayer {
@@ -43,23 +44,25 @@ public:
     void GEMM_multithread_v1(float* A, float* B, float* C);
     void GEMM_multithread_v2_MKN(float* A, float* B, float* C);
     void GEMM_multithread_v3_MKN_2d(float* A, float* B, float* C);
+    void GEMM_multithread_v4_MKN_2d_no_packa(float* A, float* B, float* C);
 
 protected:
     typedef void (*PackA)(int, int, float *, int, float *, int, int, int, const int, const int);
     typedef void (*PackAMT)(int, int, float *, int, float *, int, int, int, int, int, const int, const int);
     typedef void (*PackB)(int, int, float *, int, float *, const int, const int);
     typedef void (*PackBMT)(int, int, float *, int, float *, int, int, const int, const int);
-    // typedef void (*PackBMT)(int, int, int, int, float*, int, float*, int, int, const int, const int);
+    typedef void (*PackBMT2D)(int, int, float *, int, float *, int, int, int, int, const int, const int);
     typedef void (*PackC)(int, int, int, float*, float*, int, const int, const int);
     typedef void (*UnpackC)(int, int, int, float*, float*, int, const int, const int);
     typedef void (*InnerKernel)(int, float *, float *, float *, int, const int, const int, const int);
     typedef void (*InnerKernelForCorner)(int, float *, float *, float *, int);
-    typedef void (*inner_kernel_for_corner_func_t)(int, float *, float *, float *, int, int, svbool_t, svbool_t, svbool_t);
+    typedef void (*inner_kernel_for_corner_func_t)(int, float *, float *, float *, int, int, int, svbool_t*);
 
     PackA pack_a;
     PackAMT pack_a_mt;
     PackB pack_b;
     PackBMT pack_b_mt;
+    PackBMT2D pack_b_mt_2d;
     PackC pack_c;
     UnpackC unpack_c;
     InnerKernel inner_kernel;

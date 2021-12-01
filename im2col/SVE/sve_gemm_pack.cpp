@@ -156,6 +156,7 @@ void pack_b_v2_12x32_multithread(int kc_adjust, int nc_adjust, float *B, int ldb
         packB_ptr = packB + n * kc_adjust + COL_BATCH * kc_from;
         // for (int k = 0; k < kc_adjust; k++) {
         for (int k = kc_from; k < kc_to; k++) {
+            asm volatile ("prfm	pldl2keep, [%[B_ptr], 256]\n"::[B_ptr]"r"(B_ptr):);
             svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, B_ptr));
             svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, B_ptr + 16));
             packB_ptr += COL_BATCH;
@@ -173,6 +174,111 @@ void pack_b_v2_12x32_multithread(int kc_adjust, int nc_adjust, float *B, int ldb
         packB_ptr = packB + remain_col_start * kc_adjust + remain * kc_from;
         // printf("packB inner pid = %d, remain_col_start = %d, remain = %d\n", omp_get_thread_num(), remain_col_start, remain);
         // for (int k = 0; k < kc_adjust; k++) {
+        for (int k = kc_from; k < kc_to; k++) {
+            for (int i = 0; i < remain; i++)
+                packB_ptr[i] = B_ptr[i];
+
+            packB_ptr += remain;
+            B_ptr += ldb;
+        }
+    }
+}
+
+void pack_b_v2_12x32_multithread_2d(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB,
+                                    int nc_from, int nc_to, int kc_from, int kc_to,
+                                    const int ROW_BATCH, const int COL_BATCH) {
+    int remain_col_start = nc_to - (nc_to - nc_from) % COL_BATCH;
+    float *B_ptr, *packB_ptr;
+    svbool_t pg_all = svptrue_b32();
+	#pragma fj loop prefetch_stride 
+    for (int n = nc_from; n < remain_col_start; n += COL_BATCH) {
+        B_ptr = B + kc_from * ldb + n;
+        packB_ptr = packB + n * kc_adjust + COL_BATCH * kc_from;
+        for (int k = kc_from; k < kc_to; k++) {
+            asm volatile ("prfm	pldl2keep, [%[B_ptr], 256]\n"::[B_ptr]"r"(B_ptr):);
+            asm volatile ("prfm	pldl2keep, [%[packB_ptr], 256]\n"::[packB_ptr]"r"(packB_ptr):);
+            svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, B_ptr));
+            svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, B_ptr + 16));
+            packB_ptr += COL_BATCH;
+            B_ptr += ldb;
+        }
+    }
+
+    if (remain_col_start < nc_to) {
+        int remain = nc_to - remain_col_start;
+        B_ptr = B + kc_from * ldb + remain_col_start;
+        packB_ptr = packB + remain_col_start * kc_adjust + remain * kc_from;
+        for (int k = kc_from; k < kc_to; k++) {
+            for (int i = 0; i < remain; i++)
+                packB_ptr[i] = B_ptr[i];
+
+            packB_ptr += remain;
+            B_ptr += ldb;
+        }
+    }
+}
+
+void pack_b_v2_8x48_multithread_2d(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB,
+                                    int nc_from, int nc_to, int kc_from, int kc_to,
+                                    const int ROW_BATCH, const int COL_BATCH) {
+    int remain_col_start = nc_to - (nc_to - nc_from) % COL_BATCH;
+    float *B_ptr, *packB_ptr;
+    svbool_t pg_all = svptrue_b32();
+	#pragma fj loop prefetch_stride 
+    for (int n = nc_from; n < remain_col_start; n += COL_BATCH) {
+        B_ptr = B + kc_from * ldb + n;
+        packB_ptr = packB + n * kc_adjust + COL_BATCH * kc_from;
+        for (int k = kc_from; k < kc_to; k++) {
+            asm volatile ("prfm	pldl2keep, [%[B_ptr], 256]\n"::[B_ptr]"r"(B_ptr):);
+            asm volatile ("prfm	pldl2keep, [%[packB_ptr], 256]\n"::[packB_ptr]"r"(packB_ptr):);
+            svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, B_ptr));
+            svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, B_ptr + 16));
+            svst1_f32(pg_all, packB_ptr + 32, svld1_f32(pg_all, B_ptr + 32));
+            packB_ptr += COL_BATCH;
+            B_ptr += ldb;
+        }
+    }
+
+    if (remain_col_start < nc_to) {
+        int remain = nc_to - remain_col_start;
+        B_ptr = B + kc_from * ldb + remain_col_start;
+        packB_ptr = packB + remain_col_start * kc_adjust + remain * kc_from;
+        for (int k = kc_from; k < kc_to; k++) {
+            for (int i = 0; i < remain; i++)
+                packB_ptr[i] = B_ptr[i];
+
+            packB_ptr += remain;
+            B_ptr += ldb;
+        }
+    }
+}
+
+void pack_b_v2_5x64_multithread_2d(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB,
+                                    int nc_from, int nc_to, int kc_from, int kc_to,
+                                    const int ROW_BATCH, const int COL_BATCH) {
+    int remain_col_start = nc_to - (nc_to - nc_from) % COL_BATCH;
+    float *B_ptr, *packB_ptr;
+    svbool_t pg_all = svptrue_b32();
+	#pragma fj loop prefetch_stride 
+    for (int n = nc_from; n < remain_col_start; n += COL_BATCH) {
+        B_ptr = B + kc_from * ldb + n;
+        packB_ptr = packB + n * kc_adjust + COL_BATCH * kc_from;
+        for (int k = kc_from; k < kc_to; k++) {
+            asm volatile ("prfm	pldl2keep, [%[B_ptr], 256]\n"::[B_ptr]"r"(B_ptr):);
+            asm volatile ("prfm	pldl2keep, [%[packB_ptr], 256]\n"::[packB_ptr]"r"(packB_ptr):);
+            svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, B_ptr));
+            svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, B_ptr + 16));
+            svst1_f32(pg_all, packB_ptr + 32, svld1_f32(pg_all, B_ptr + 32));
+            svst1_f32(pg_all, packB_ptr + 48, svld1_f32(pg_all, B_ptr + 48));
+            packB_ptr += COL_BATCH;
+            B_ptr += ldb;
+        }
+    }
+
+    if (remain_col_start < nc_to) {
+        int remain = nc_to - remain_col_start;
+        B_ptr = B + kc_from * ldb + remain_col_start;
+        packB_ptr = packB + remain_col_start * kc_adjust + remain * kc_from;
         for (int k = kc_from; k < kc_to; k++) {
             for (int i = 0; i < remain; i++)
                 packB_ptr[i] = B_ptr[i];

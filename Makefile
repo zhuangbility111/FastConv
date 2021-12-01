@@ -6,7 +6,7 @@ OS = $(shell uname -s)
 # CXX_SRC = ./winoF63/winoF63.cpp ./winoF63/TensorGEMM.cpp
 CXX_SRC = ./utility/helper.cpp ./utility/common.cpp ConvTest.cpp
 # CXX_SRC += ./im2col/NEON/neon_gemm_kernel.cpp ./im2col/NEON/neon_gemm_pack.cpp ./convLayer/im2colConv.cpp
-CXX_SRC += ./im2col/SVE/sve_gemm_kernel.cpp ./im2col/SVE/sve_gemm_pack.cpp ./convLayer/im2colConv.cpp
+CXX_SRC += ./im2col/SVE/sve_gemm_kernel_no_packa.cpp ./im2col/SVE/sve_gemm_kernel.cpp ./im2col/SVE/sve_gemm_pack.cpp ./convLayer/im2colConv.cpp
 # CXX_SRC += ./winoF63ZC/TensorGEMMZC.cpp ./winoF63ZC/winoF63ZC.cpp ./convLayer/winoF63ConvZC.cpp
 
 ifeq ($(OS), ANDROID)
@@ -32,7 +32,7 @@ else
 #	LD_FLAGS  = -Kfast -Kzfill=18 -Kswp -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=9 -Kprefetch_line_L2=70
 
 	CXX = FCC
-	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp
+	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kprefetch_stride=soft -Kprefetch_indirect -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=19 -Kzfill=9 -Kswp
 	LD_FLAGS  = -Kfast -Kopenmp -Nlibomp
 
 #	CXX = FCC
