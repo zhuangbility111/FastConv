@@ -1511,7 +1511,7 @@ void kernel_12x32_v2(int kc_adjust, float *packA, float* packB, float *packC, in
 
 template <int M, int N>
 void kernel_MxN_for_12x32(int kc_adjust, float *packA, float *packB, float *packC, int lda, int ldc, int remain_col,
-                            svbool_t* pg32) {
+                            svbool_t pg32_0, svbool_t pg32_1, svbool_t pg32_2, svbool_t pg32_3) {
     float* packAPtr = packA;
     float* packBPtr = packB;
     float* cPtr = packC;
@@ -1531,7 +1531,7 @@ void kernel_MxN_for_12x32(int kc_adjust, float *packA, float *packB, float *pack
     svfloat32_t vc100, vc101;
     svfloat32_t vc110, vc111;
 
-    svbool_t p32_v0 = pg32[0], p32_v1 = pg32[1];
+    svbool_t p32_v0 = pg32_0, p32_v1 = pg32_1;
 
     // load C
     if (M >= 1) {
@@ -2289,7 +2289,7 @@ void kernel_8x48(int kc_adjust, float *packA, float* packB, float *packC, int ld
 
 template <int M, int N>
 void kernel_MxN_for_8x48(int kc_adjust, float *packA, float *packB, float *packC, int lda, int ldc, int remain_col,
-                            svbool_t* pg32) {
+                            svbool_t pg32_0, svbool_t pg32_1, svbool_t pg32_2, svbool_t pg32_3) {
     float* packAPtr = packA;
     float* packBPtr = packB;
     float* cPtr = packC;
@@ -2305,7 +2305,7 @@ void kernel_MxN_for_8x48(int kc_adjust, float *packA, float *packB, float *packC
     svfloat32_t vc60, vc61, vc62;
     svfloat32_t vc70, vc71, vc72;
 
-    svbool_t p32_v0 = pg32[0], p32_v1 = pg32[1], p32_v2 = pg32[2];
+    svbool_t p32_v0 = pg32_0, p32_v1 = pg32_1, p32_v2 = pg32_2;
 
     // load C
     if (M >= 1) {

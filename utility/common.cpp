@@ -179,3 +179,14 @@ int get_cache_info(size_t &l1_cache_size_per_core, size_t &l2_cache_size_per_cor
     return 1;
 #endif
 }
+
+void divide_parallel_range(int total_range, int parallel_ways, int start, int* range) {
+    range[0] = start;
+    for (int temp_i = total_range, temp_width = 0, temp_node_idx = 0; temp_i > 0; temp_node_idx++) {
+        temp_width = (temp_i + parallel_ways - temp_node_idx - 1) / (parallel_ways - temp_node_idx);
+        temp_i -= temp_width;
+        if (temp_i < 0)
+            temp_width += temp_i;
+        range[temp_node_idx + 1] = range[temp_node_idx] + temp_width;
+    }
+}

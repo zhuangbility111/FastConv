@@ -8,6 +8,19 @@
 #include "../im2col/SVE/sve_gemm_kernel.h"
 #include "../im2col/SVE/sve_gemm_kernel_no_packa.h"
 
+struct Thread_group_idx{
+    size_t m;
+    size_t n;
+    size_t mc;
+    size_t nc;
+};
+
+struct Thread_idx_in_group{
+    size_t m;
+    size_t n;
+    size_t mc;
+    size_t nc;
+};
 
 class ConvIm2colLayer : public ConvLayer {
 
@@ -45,6 +58,8 @@ public:
     void GEMM_multithread_v2_MKN(float* A, float* B, float* C);
     void GEMM_multithread_v3_MKN_2d(float* A, float* B, float* C);
     void GEMM_multithread_v4_MKN_2d_no_packa(float* A, float* B, float* C);
+    void GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float* B, float* C);
+    void GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float* C);
 
 protected:
     typedef void (*PackA)(int, int, float *, int, float *, int, int, int, const int, const int);
@@ -56,7 +71,7 @@ protected:
     typedef void (*UnpackC)(int, int, int, float*, float*, int, const int, const int);
     typedef void (*InnerKernel)(int, float *, float *, float *, int, const int, const int, const int);
     typedef void (*InnerKernelForCorner)(int, float *, float *, float *, int);
-    typedef void (*inner_kernel_for_corner_func_t)(int, float *, float *, float *, int, int, int, svbool_t*);
+    typedef void (*inner_kernel_for_corner_func_t)(int, float *, float *, float *, int, int, int, svbool_t, svbool_t, svbool_t, svbool_t);
 
     PackA pack_a;
     PackAMT pack_a_mt;
@@ -67,7 +82,6 @@ protected:
     UnpackC unpack_c;
     InnerKernel inner_kernel;
     InnerKernelForCorner inner_kernel_for_corner;
-    
 
     int M;
     int N;
@@ -75,6 +89,11 @@ protected:
     int mc;
     int nc;
     int kc;
+    int kc_parallel_ways = 1;
+    int mc_parallel_ways = 1;
+    int nc_parallel_ways = 1;
+    int mr_parallel_ways = 1;
+    int nr_parallel_ways = 1;
     int row_batch;
     int col_batch;
     int pack_c_version;
@@ -91,6 +110,8 @@ protected:
     static const int GEMM_BLOCKS_SINGLE_THREAD = 1;
     static const int GEMM_BLOCKS_MULTI_THREADS = 2;
     static const int GEMM_BLOCKS_MULTI_THREADS_2D = 3;
+
+    void set_parallelism_ways();
 
     void set_pack_a();
     void set_pack_a_mt();

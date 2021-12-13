@@ -39,3 +39,6 @@ void _mm_free(void* ptr);
 // 向上取整为align的倍数
 int align_ceil(int num, int align);
 int get_cache_info(size_t &l1_cache_size_per_core, size_t &l2_cache_size_per_core);
+
+// 根据线程数进行平均分块
+void divide_parallel_range(int total_range, int parallel_ways, int start, int* range);

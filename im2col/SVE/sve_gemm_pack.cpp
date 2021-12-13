@@ -195,8 +195,8 @@ void pack_b_v2_12x32_multithread_2d(int kc_adjust, int nc_adjust, float *B, int 
         B_ptr = B + kc_from * ldb + n;
         packB_ptr = packB + n * kc_adjust + COL_BATCH * kc_from;
         for (int k = kc_from; k < kc_to; k++) {
-            asm volatile ("prfm	pldl2keep, [%[B_ptr], 256]\n"::[B_ptr]"r"(B_ptr):);
-            asm volatile ("prfm	pldl2keep, [%[packB_ptr], 256]\n"::[packB_ptr]"r"(packB_ptr):);
+            // asm volatile ("prfm	pldl2keep, [%[B_ptr], 256]\n"::[B_ptr]"r"(B_ptr):);
+            // asm volatile ("prfm	pldl2keep, [%[packB_ptr], 256]\n"::[packB_ptr]"r"(packB_ptr):);
             svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, B_ptr));
             svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, B_ptr + 16));
             packB_ptr += COL_BATCH;

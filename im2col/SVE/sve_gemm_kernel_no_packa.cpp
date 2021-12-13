@@ -41,6 +41,21 @@ void kernel_12x32_no_packa(int kc_adjust, float *packA, float* packB, float *pac
 
         "lsl    x19, %[lda], #2 \n"
 
+        "mov    x18, 0x2   \n"
+        "lsl    x18, x18, 56      \n"
+        "orr    %[pC0], %[pC0], x18 \n"
+        "orr    %[pC1], %[pC1], x18 \n"
+        "orr    %[pC2], %[pC2], x18 \n"
+        "orr    %[pC3], %[pC3], x18 \n"
+        "orr    %[pC4], %[pC4], x18 \n"
+        "orr    %[pC5], %[pC5], x18 \n"
+        "orr    %[pC6], %[pC6], x18 \n"
+        "orr    %[pC7], %[pC7], x18 \n"
+        "orr    %[pC8], %[pC8], x18 \n"
+        "orr    %[pC9], %[pC9], x18 \n"
+        "orr    %[pC10], %[pC10], x18 \n"
+        "orr    %[pC11], %[pC11], x18 \n"
+
         "mov    x8,  %[pA]   \n"
 		"add    x10, %[pA], x19, lsl #1\n"
 		"add    x12, %[pA], x19, lsl #2\n"
@@ -187,7 +202,7 @@ void kernel_12x32_no_packa(int kc_adjust, float *packA, float* packB, float *pac
         "add	x10, x10, #8                      \n"
         "add	x11, x11, #8                      \n"
 
-        "prfm	pldl1keep, [x16, #256]             \n"
+        //"prfm	pldl1keep, [x16, #256]             \n"
         "fmla	z8.s,  p0/m, z6.s, z0.s                 \n"
         "fmla	z9.s,  p0/m, z7.s, z0.s                 \n"
         "fmla	z10.s, p0/m, z6.s, z1.s                 \n"
@@ -214,7 +229,7 @@ void kernel_12x32_no_packa(int kc_adjust, float *packA, float* packB, float *pac
         "fmla	z18.s, p0/m, z6.s, z1.s                 \n"
         "fmla	z19.s, p0/m, z7.s, z1.s                 \n"
 
-        // "prfm	pldl1keep, [%[pA], #1024]               \n"
+        //"prfm	pldl1keep, [%[pA], #1024]               \n"
         "ld1rw	{ z0.s }, p0/z, [x16, #4]            \n"
 	    "ld1rw	{ z1.s }, p0/z, [x17, #4]            \n"
 
@@ -232,7 +247,7 @@ void kernel_12x32_no_packa(int kc_adjust, float *packA, float* packB, float *pac
         "add	x18, x18, #8                    \n"
         "add	x19, x19, #8                    \n"
 
-        "prfm	pldl1keep, [x18, #256]             \n"
+        //"prfm	pldl1keep, [x18, #256]             \n"
         "fmla	z24.s, p0/m, z6.s, z0.s                 \n"
         "fmla	z25.s, p0/m, z7.s, z0.s                 \n"
         "fmla	z26.s, p0/m, z6.s, z1.s                 \n"
@@ -362,7 +377,7 @@ void kernel_12x32_no_packa(int kc_adjust, float *packA, float* packB, float *pac
 
 template <int M, int N>
 void kernel_MxN_for_12x32_no_packa(int kc_adjust, float *packA, float *packB, float *packC, int ldc, int lda, int remain_col,
-                            svbool_t* pg32) {
+                            svbool_t pg32_0, svbool_t pg32_1, svbool_t pg32_2, svbool_t pg32_3) {
     float* packAPtr = packA;
     float* packBPtr = packB;
     float* cPtr = packC;
@@ -382,7 +397,7 @@ void kernel_MxN_for_12x32_no_packa(int kc_adjust, float *packA, float *packB, fl
     svfloat32_t vc100, vc101;
     svfloat32_t vc110, vc111;
 
-    svbool_t p32_v0 = pg32[0], p32_v1 = pg32[1];
+    svbool_t p32_v0 = pg32_0, p32_v1 = pg32_1;
 
     // load C
     if (M >= 1) {
@@ -975,7 +990,7 @@ void kernel_8x48_no_packa(int kc_adjust, float *packA, float* packB, float *pack
 // to-do
 template <int M, int N>
 void kernel_MxN_for_8x48_no_packa(int kc_adjust, float *packA, float *packB, float *packC, int ldc, int lda, int remain_col,
-                            svbool_t* pg32) {
+                            svbool_t pg32_0, svbool_t pg32_1, svbool_t pg32_2, svbool_t pg32_3) {
     float* packAPtr = packA;
     float* packBPtr = packB;
     float* cPtr = packC;
@@ -991,7 +1006,7 @@ void kernel_MxN_for_8x48_no_packa(int kc_adjust, float *packA, float *packB, flo
     svfloat32_t vc60, vc61, vc62;
     svfloat32_t vc70, vc71, vc72;
 
-    svbool_t p32_v0 = pg32[0], p32_v1 = pg32[1], p32_v2 = pg32[2];
+    svbool_t p32_v0 = pg32_0, p32_v1 = pg32_1, p32_v2 = pg32_2;
 
     // load C
     if (M >= 1) {
@@ -1500,13 +1515,13 @@ void kernel_5x64_no_packa(int kc_adjust, float *packA, float* packB, float *pack
         "cmp    %[kc], #0  \n"
         "b.eq   3f      \n"
 
-		//"add	%[pC0], %[pC0], 256*2 \n"
-		// "prfm	pstl1keep, [%[pC0], 256*2] \n"
-		// "prfm	pstl1keep, [%[pC1], 256*2] \n"
-		// "prfm	pstl1keep, [%[pC2], 256*2] \n"
-		// "prfm	pstl1keep, [%[pC3], 256*2] \n"
-		// "prfm	pstl1keep, [%[pC4], 256*2] \n"
-		//"sub	%[pC0], %[pC0], 256*2 \n"
+		// "add	%[pC0], %[pC0], 256*2 \n"
+		"prfm	pstl1keep, [%[pC0], 256] \n"
+		"prfm	pstl1keep, [%[pC1], 256] \n"
+		"prfm	pstl1keep, [%[pC2], 256] \n"
+		"prfm	pstl1keep, [%[pC3], 256] \n"
+		"prfm	pstl1keep, [%[pC4], 256] \n"
+		// "sub	%[pC0], %[pC0], 256*2 \n"
 
         "ld1w	{ z2.s }, p0/z, [%[pC0]]      \n"  // load C
         "ld1w	{ z3.s }, p0/z, [%[pC1]]      \n"
@@ -1792,13 +1807,13 @@ void kernel_5x64_no_packa_v1(int kc_adjust, float *packA, float* packB, float *p
         "cmp    %[kc], #0  \n"
         "beq    3f      \n"
 
-		//"add	%[pC0], %[pC0], 256*2 \n"
-		// "prfm	pstl1keep, [%[pC0], 256*2] \n"
+		"add	%[pC0], %[pC0], 256*2 \n"
+		"prfm	pstl1keep, [%[pC0], 256*2] \n"
 		// "prfm	pstl1keep, [%[pC1], 256*2] \n"
 		// "prfm	pstl1keep, [%[pC2], 256*2] \n"
 		// "prfm	pstl1keep, [%[pC3], 256*2] \n"
 		// "prfm	pstl1keep, [%[pC4], 256*2] \n"
-		//"sub	%[pC0], %[pC0], 256*2 \n"
+		"sub	%[pC0], %[pC0], 256*2 \n"
 
         "ld1w	{ z4.s },  p0/z, [%[pC0]]      \n"  // load C
         "ld1w	{ z5.s },  p0/z, [%[pC0], #1, MUL VL]    \n"
@@ -2207,7 +2222,7 @@ void kernel_5x64_no_packa_v1(int kc_adjust, float *packA, float* packB, float *p
 
 template <int M, int N>
 void kernel_MxN_for_5x64_no_packa(int kc_adjust, float *packA, float *packB, float *packC, int ldc, int lda, int remain_col,
-                            svbool_t* pg32) {
+                            svbool_t pg32_0, svbool_t pg32_1, svbool_t pg32_2, svbool_t pg32_3) {
     float* packAPtr = packA;
     float* packBPtr = packB;
     float* cPtr = packC;
@@ -2220,7 +2235,7 @@ void kernel_MxN_for_5x64_no_packa(int kc_adjust, float *packA, float *packB, flo
     svfloat32_t vc30, vc31, vc32, vc33;
     svfloat32_t vc40, vc41, vc42, vc43;
 
-    svbool_t p32_v0 = pg32[0], p32_v1 = pg32[1], p32_v2 = pg32[2], p32_v3 = pg32[3];
+    svbool_t p32_v0 = pg32_0, p32_v1 = pg32_1, p32_v2 = pg32_2, p32_v3 = pg32_3;
 
     // load C
     if (M >= 1) {
