@@ -32,8 +32,9 @@ else
 #	LD_FLAGS  = -Kfast -Kzfill=18 -Kswp -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=9 -Kprefetch_line_L2=70
 
 	CXX = FCC
-	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kprefetch_stride=soft -Kprefetch_indirect -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=19 -Kzfill=9 -Kswp
-	LD_FLAGS  = -Kfast -Kopenmp -Nlibomp
+#	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kprefetch_stride=soft -Kprefetch_indirect -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=19 -Kzfill=9 -Kswp
+	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -O3 -Nfjomplib -fopenmp -Kfast,zfill -Kopenmp -Ksimd_reg_size=512
+	LD_FLAGS  = -Kfast,zfill -Kopenmp -Nfjomplib
 
 #	CXX = FCC
 #	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kswp

@@ -6,6 +6,8 @@
 #include <sys/stat.h> 
 #include <vector>
 #include <omp.h>
+#include <numaif.h>
+#include <sys/mman.h>
 // #include <numa.h>
 #include "fj_tool/fapp.h"	// profiler header
 
@@ -14,6 +16,7 @@
 #endif /* __ARM_FEATURE_SVE */
 
 #define CHECK 0
+#define PROFILE 0
 #define PAGE_SIZE 2097152 	// 2MB
 
 struct RegisterKernel {
@@ -22,6 +25,22 @@ struct RegisterKernel {
 
     RegisterKernel() {}
     RegisterKernel(int row, int col) : row_batch(row), col_batch(col) {}
+};
+
+struct ParallelWays{
+    int kc_parallel_ways = 1;
+    int mc_parallel_ways = 1;
+    int nc_parallel_ways = 1;
+    int mr_parallel_ways = 1;
+    int nr_parallel_ways = 1;
+
+    ParallelWays() = default;
+    ParallelWays(int kc_pw, int mc_pw, int nc_pw, int mr_pw, int nr_pw)
+                    : kc_parallel_ways(kc_pw),
+                      mc_parallel_ways(mc_pw),
+                      nc_parallel_ways(nc_pw),
+                      mr_parallel_ways(mr_pw),
+                      nr_parallel_ways(nr_pw) {} 
 };
 
 void fill_test_data(float* input, int M, int N) {
@@ -38,10 +57,10 @@ ConvIm2colLayer::ConvIm2colLayer(float *input, float *kernel, float *biasw, floa
                 size_t pad_left, size_t pad_right, size_t pad_top, size_t pad_bottom,
                 size_t g, bool bias, size_t nt, size_t iter,
                 int mc, int nc, int kc, int gemm_version, int row_batch, int col_batch,
-                int pack_c_version, int mt_pack_b_version, int prefetch_a, int prefetch_b, int prefetch_c)
+                int pack_a_version, int mt_pack_b_version, int prefetch_a, int prefetch_b, int prefetch_c)
                 : ConvLayer(input, kernel, biasw, output_ref, ic, ih, iw, oc, kh, kw, sh, sw, pad_left, pad_right, pad_top, pad_bottom, g, bias, nt, iter),
                 mc(mc), nc(nc), kc(kc), row_batch(row_batch), col_batch(col_batch),
-                pack_c_version(pack_c_version), mt_pack_b_version(mt_pack_b_version), prefetch_a(prefetch_a), prefetch_b(prefetch_b), prefetch_c(prefetch_c) {
+                pack_a_version(pack_a_version), mt_pack_b_version(mt_pack_b_version), prefetch_a(prefetch_a), prefetch_b(prefetch_b), prefetch_c(prefetch_c) {
     
    	this->M = output_channels;
    	this->N = output_height * output_width;
@@ -65,7 +84,8 @@ ConvIm2colLayer::ConvIm2colLayer(float *input, float *kernel, float *biasw, floa
     int padding_input_size = (input_width  + padding_left + padding_right) 
                             * (input_height + padding_top  + padding_bottom);
 
-    this->set_parallelism_ways();
+    this->set_parallelism_ways(1, 4, 12, 1, 1);
+    // this->pack_a_version = 0;
 
     this->kernel_data = static_cast<float*>(_mm_malloc(sizeof(float) * M * K, 256));
     this->transform_input_data = static_cast<float*>(_mm_malloc(sizeof(float) * N * K, 256));
@@ -108,11 +128,14 @@ ConvIm2colLayer::~ConvIm2colLayer() {
 
 }
 
-void ConvIm2colLayer::set_parallelism_ways() {
+void ConvIm2colLayer::set_parallelism_ways(int kc_pw, int mc_pw, int nc_pw, int mr_pw, int nr_pw) {
     // this->nc_parallel_ways = this->num_nodes;
     // this->mc_parallel_ways = this->num_threads / this->num_nodes;
-    this->nc_parallel_ways = 4;
-    this->mc_parallel_ways = 12;
+    this->kc_parallel_ways = kc_pw;
+    this->nc_parallel_ways = mc_pw;
+    this->mc_parallel_ways = nc_pw;
+    this->mr_parallel_ways = mr_pw;
+    this->nr_parallel_ways = nr_pw;
     // this->mr_parallel_ways = this->num_threads / this->num_nodes;
     // this->nr_parallel_ways = ;
 }
@@ -177,7 +200,7 @@ void ConvIm2colLayer::select_tuning_range_for_mnk(size_t &l1_bound, size_t &l2_b
     
 }
 
-void ConvIm2colLayer::select_tuning_range_for_pack(int &pc_begin, int &pc_end, int &pc_step,
+void ConvIm2colLayer::select_tuning_range_for_pack(int &pa_begin, int &pa_end, int &pa_step,
                                                    int &pb_begin, int &pb_end, int &pb_step) {
     pb_begin = 0;
     pb_step  = 1;
@@ -185,9 +208,12 @@ void ConvIm2colLayer::select_tuning_range_for_pack(int &pc_begin, int &pc_end, i
     // if (gemm_version == GEMM_BLOCKS_MULTI_THREADS)
     //     pb_end = 2;
     
-    pc_begin = 0;
-    pc_step  = 1;
-    pc_end   = 1 - 1;
+    // pc_begin = 0;
+    // pc_step  = 1;
+    // pc_end   = 1 - 1;
+    pa_begin = 0;
+    pa_step  = 1;
+    pa_end   = 1;
 }
 
 void ConvIm2colLayer::select_tuning_range_for_prefetch(int &pre_a_begin, int &pre_a_end, int &pre_a_step,
@@ -195,37 +221,40 @@ void ConvIm2colLayer::select_tuning_range_for_prefetch(int &pre_a_begin, int &pr
                                                        int &pre_c_begin, int &pre_c_end, int &pre_c_step) {
     pre_a_begin = 256;
     pre_a_step  = 256;
-    pre_a_end   = 512 - 1;
+    pre_a_end   = 0;
 
     pre_b_begin = 256;
     pre_b_step  = 256;
-    pre_b_end   = 512 - 1;
+    pre_b_end   = 0;
 
-    pre_c_begin = 0;
+    pre_c_begin = 256;
     pre_c_step  = 256;
-    pre_c_end   = 256 - 1;
+    pre_c_end   = 0;
 }
 
 bool ConvIm2colLayer::search_log_file_and_entry(const char *log_path) {
     bool is_log_entry_exist = false;
     FILE *log_file = fopen(log_path, "a+");
     fseek(log_file, 0, SEEK_SET);
-    int M, N, K, mc, nc, kc, row_batch, col_batch, gemm_version, pc_version, pb_version, pre_a, pre_b, pre_c, num_thrd;
+    int M, N, K, mc, nc, kc, row_batch, col_batch, gemm_version, pa_version, pb_version, pre_a, pre_b, pre_c, mc_pw, nc_pw, num_thrd;
     if (log_file != nullptr) {
-        while (fscanf(log_file, "%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d", 
-                    &M, &N, &K, &mc, &nc, &kc, &row_batch, &col_batch, &gemm_version, &pc_version, &pb_version, &pre_a, &pre_b, &pre_c, &num_thrd) != EOF) {
-	    if (M == this->M && N == this->N && K == this->K && gemm_version == this->gemm_version && num_thrd == this->num_threads) {
+        while (fscanf(log_file, "%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d", 
+                    &M, &N, &K, &mc, &nc, &kc, &row_batch, &col_batch, &gemm_version, &pa_version, &pb_version,
+                    &pre_a, &pre_b, &pre_c, &mc_pw, &nc_pw, &num_thrd) != EOF) {
+	        if (M == this->M && N == this->N && K == this->K && gemm_version == this->gemm_version && num_thrd == this->num_threads) {
                 is_log_entry_exist = true;
                 this->mc = mc;
                 this->nc = nc; 
                 this->kc = kc;
                 this->row_batch = row_batch;
                 this->col_batch = col_batch;
-                this->pack_c_version = pc_version; 
+                this->pack_a_version = pa_version; 
                 this->mt_pack_b_version = pb_version;
                 this->prefetch_a = pre_a;
                 this->prefetch_b = pre_b;
                 this->prefetch_c = pre_c;
+                this->mc_parallel_ways = mc_pw;
+                this->nc_parallel_ways = nc_pw;
                 break;
             }
         }
@@ -235,7 +264,8 @@ bool ConvIm2colLayer::search_log_file_and_entry(const char *log_path) {
 }
 
 void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc, int &best_rb, int &best_cb,
-                                        int &best_pc, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c) {
+                                        int &best_pa, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c,
+                                        int &best_mc_pw, int &best_nc_pw) {
     size_t l1_cache_size_per_core = 65536;
     size_t l2_cache_size_per_core = 524288;
     get_cache_info(l1_cache_size_per_core, l2_cache_size_per_core);
@@ -251,6 +281,8 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
     RegisterKernel best_kernel;
 
     std::vector<RegisterKernel> kernels;
+    std::vector<ParallelWays> parallel_ways;
+
     // kernels.push_back(RegisterKernel(8, 8));
     // kernels.push_back(RegisterKernel(8, 12));
     // kernels.push_back(RegisterKernel(4, 16));
@@ -258,11 +290,27 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
     // kernels.push_back(RegisterKernel(14, 32));
     // kernels.push_back(RegisterKernel(10, 32));
     // kernels.push_back(RegisterKernel(8, 32));
-    kernels.push_back(RegisterKernel(8, 48));
-    kernels.push_back(RegisterKernel(12, 32));
-    // kernels.push_back(RegisterKernel(5, 64));
+    kernels.push_back(RegisterKernel(5, 64));
+    // kernels.push_back(RegisterKernel(8, 48));
+    // kernels.push_back(RegisterKernel(12, 32));
+
+    if (this->num_threads == 1) {
+        parallel_ways.push_back(ParallelWays(1, 1, 1, 1, 1));
+    } else if (this->num_threads == 12) {
+        parallel_ways.push_back(ParallelWays(1, 3, 4, 1, 1));
+        parallel_ways.push_back(ParallelWays(1, 4, 3, 1, 1));
+        parallel_ways.push_back(ParallelWays(1, 2, 6, 1, 1));
+        parallel_ways.push_back(ParallelWays(1, 6, 2, 1, 1));
+        parallel_ways.push_back(ParallelWays(1, 12, 1, 1, 1));
+        parallel_ways.push_back(ParallelWays(1, 1, 12, 1, 1));
+    }
+    else if (this->num_threads == 48) {
+        parallel_ways.push_back(ParallelWays(1, 4, 12, 1, 1));
+        parallel_ways.push_back(ParallelWays(1, 12, 4, 1, 1));
+        parallel_ways.push_back(ParallelWays(1, 6, 8, 1, 1));
+    }
     int mc_begin, mc_end, mc_step, nc_begin, nc_end, nc_step, kc_begin, kc_end, kc_step;
-    int pc_begin, pc_end, pc_step, pb_begin, pb_end, pb_step;
+    int pa_begin, pa_end, pa_step, pb_begin, pb_end, pb_step;
     int pre_a_begin, pre_a_end, pre_a_step, pre_b_begin, pre_b_end, pre_b_step, pre_c_begin, pre_c_end, pre_c_step;
 
     printf("tuning begin...\n");
@@ -272,7 +320,7 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
         this->row_batch = it->row_batch;
         this->col_batch = it->col_batch;
         select_tuning_range_for_mnk(l1_cache_size_per_core, l2_cache_size_per_core, mc_begin, mc_end, mc_step, nc_begin, nc_end, nc_step, kc_begin, kc_end, kc_step);
-        select_tuning_range_for_pack(pc_begin, pc_end, pc_step, pb_begin, pb_end, pb_step);
+        select_tuning_range_for_pack(pa_begin, pa_end, pa_step, pb_begin, pb_end, pb_step);
         select_tuning_range_for_prefetch(pre_a_begin, pre_a_end, pre_a_step, pre_b_begin, pre_b_end, pre_b_step, pre_c_begin, pre_c_end, pre_c_step);
 
         size_t cur_round = 0;
@@ -288,102 +336,126 @@ void ConvIm2colLayer::search_best_param(int &best_mc, int &best_nc, int &best_kc
         printf("==============================\n");
         printf("cur/total round of this kernel: %d/%lld\n", 1, total_round);
 
-        for (int m = mc_begin; m <= mc_end; m += mc_step) {
-			if (m > this->M)
-				break;
-            for (int n = nc_begin; n <= nc_end; n += nc_step) {
-				if (n > this->N)
-					break;
-                for (int k = kc_begin; k <= kc_end; k += kc_step) {
-//                    if ((size_t)(m * k) > l1_bound || (size_t)(k * n) > l2_bound) {
-//                        cur_round += (kc_end - k) / kc_step + 1;
-//                        break;
-//                    }
-                    cur_round++;
-		    if (cur_round == total_round) {
-                        printf("==============================\n");
-                        printf("cur/total round of this kernel: %d/%lld\n", cur_round, total_round);
-                        printf("best time: %fms\n", best_time);
-		    } else if (cur_round % 50 == 0) {
-                        printf("==============================\n");
-                        printf("cur/total round of this kernel: %d/%lld\n", cur_round, total_round);
-                        printf("best time: %fms\n", best_time);
-                    }
-                    for (int pc_version = pc_begin; pc_version <= pc_end; pc_version += pc_step) {
-                        for (int pb_version = pb_begin; pb_version <= pb_end; pb_version += pb_step) {
-                            for (int pre_a = pre_a_begin; pre_a <= pre_a_end; pre_a += pre_a_step) {
-                                for (int pre_b = pre_b_begin; pre_b <= pre_b_end; pre_b += pre_b_step) {
-                                    for (int pre_c = pre_c_begin; pre_c <= pre_c_end; pre_c += pre_b_step) {
-                                        this->mc = m; 
-                                        this->nc = n; 
-                                        this->kc = k;
-										printf("mc = %d, nc = %d, kc = %d\n", this->mc, this->nc, this->kc);
-                                        this->pack_c_version = pc_version; 
-                                        this->mt_pack_b_version = pb_version;
-                                        this->prefetch_a = pre_a;
-                                        this->prefetch_b = pre_b;
-                                        this->prefetch_c = pre_c;
-                                        
-                                        this->Init();
-                                        int warmup_loop = 5;
-                                        for (int i = 0; i < warmup_loop; i++) {
-                                            // this->im2col_v1();
-    										// this->padding_input();
-                                            this->sgemm();
-                                        }
-
-                                        timer.startBench();
-                                        for (int i = 0; i < n_loop; i++) 
-                                            this->Forward();
-                                        elapsed_time = timer.endBench(n_loop);
-
-                                        // this->Init();
-                                        // timer.startBench();
-                                        // for (int i = 0; i < n_loop; i++) 
-                                        //     this->Forward();
-                                        // elapsed_time = timer.endBench(n_loop);
-                                        if (elapsed_time < best_time) {
-                                            best_time = elapsed_time;
-                                            printf("update best time: %fms\n", best_time);
-                                            best_mc = m;
-                                            best_nc = n;
-                                            best_kc = k;
-                                            best_rb = it->row_batch;
-                                            best_cb = it->col_batch;
-                                            best_pc = pc_version;
-                                            best_pb = pb_version;
-                                            best_pre_a = pre_a;
-                                            best_pre_b = pre_b;
-                                            best_pre_c = pre_c;
-                                        }
-                                    }
+        for (std::vector<ParallelWays>::iterator it1 = parallel_ways.begin(); it1 != parallel_ways.end(); it1++) {
+            this->mc_parallel_ways = it1->mc_parallel_ways;
+            this->nc_parallel_ways = it1->nc_parallel_ways;
+			printf("parallel_ways: kc = %d, mc = %d, nc = %d, mr = %d, nr = %d\n",
+					it1->kc_parallel_ways,
+					it1->mc_parallel_ways,
+					it1->nc_parallel_ways,
+					it1->mr_parallel_ways,
+					it1->nr_parallel_ways);
+            for (int pa_version = pa_begin; pa_version <= pa_end; pa_version += pa_step) {
+				printf("pack a version = %d\n", pa_version);
+                for (int pb_version = pb_begin; pb_version <= pb_end; pb_version += pb_step) {
+                    for (int m = mc_begin; m <= mc_end; m += mc_step) {
+                        if (m != mc_begin && m > (this->M + this->mc_parallel_ways - 1) / this->mc_parallel_ways)
+                            break;
+                        for (int n = nc_begin; n <= nc_end; n += nc_step) {
+                            if (n != nc_begin && n > (this->N + this->nc_parallel_ways - 1) / this->nc_parallel_ways)
+                                break;
+                            for (int k = kc_begin; k <= kc_end; k += kc_step) {
+    //                    if ((size_t)(m * k) > l1_bound || (size_t)(k * n) > l2_bound) {
+    //                        cur_round += (kc_end - k) / kc_step + 1;
+    //                        break;
+    //                    }
+                                cur_round++;
+                                if (cur_round == total_round) {
+                                    printf("==============================\n");
+                                    printf("cur/total round of this kernel: %d/%lld\n", cur_round, total_round);
+                                    printf("best time: %fms\n", best_time);
+                                } else if (cur_round % 50 == 0) {
+                                    printf("==============================\n");
+                                    printf("cur/total round of this kernel: %d/%lld\n", cur_round, total_round);
+                                    printf("best time: %fms\n", best_time);
                                 }
+                                // for (int pre_a = pre_a_begin; pre_a <= pre_a_end; pre_a += pre_a_step) {
+                                //     for (int pre_b = pre_b_begin; pre_b <= pre_b_end; pre_b += pre_b_step) {
+                                //         for (int pre_c = pre_c_begin; pre_c <= pre_c_end; pre_c += pre_b_step) {
+                                            this->mc = m; 
+                                            this->nc = n; 
+                                            this->kc = k;
+                                            printf("mc = %d, nc = %d, kc = %d\n", this->mc, this->nc, this->kc);
+                                            // this->pack_c_version = pc_version;
+                                            this->pack_a_version = pa_version; 
+                                            this->mt_pack_b_version = pb_version;
+                                            // this->prefetch_a = pre_a;
+                                            // this->prefetch_b = pre_b;
+                                            // this->prefetch_c = pre_c;
+                                            this->prefetch_a = 256;
+                                            this->prefetch_b = 256;
+                                            this->prefetch_c = 0;
+                                            
+                                            this->Init();
+                                            int warmup_loop = 5;
+                                            for (int i = 0; i < warmup_loop; i++) {
+                                                // this->im2col_v1();
+                                            	// this->padding_input();
+                                                this->sgemm();
+                                            }
+
+                                            timer.startBench();
+                                            for (int i = 0; i < n_loop; i++) 
+                                                this->Forward();
+                                            elapsed_time = timer.endBench(n_loop);
+
+                                            // this->Init();
+                                            // timer.startBench();
+                                            // for (int i = 0; i < n_loop; i++) 
+                                            //     this->Forward();
+                                            // elapsed_time = timer.endBench(n_loop);
+                                            if (elapsed_time < best_time) {
+                                                best_time = elapsed_time;
+                                                printf("update best time: %fms\n", best_time);
+                                                best_mc = m;
+                                                best_nc = n;
+                                                best_kc = k;
+                                                best_rb = it->row_batch;
+                                                best_cb = it->col_batch;
+                                                best_pa = pa_version;
+                                                best_pb = pb_version;
+                                                // best_pre_a = pre_a;
+                                                // best_pre_b = pre_b;
+                                                // best_pre_c = pre_c;
+                                                best_pre_a = 256;
+                                                best_pre_b = 256;
+                                                best_pre_c = 0;
+                                                best_mc_pw = it1->mc_parallel_ways;
+                                                best_nc_pw = it1->nc_parallel_ways;
+                                            }
+                                //         }
+                                //     }
+                                // }
                             }
                         }
                     }
                 }
             }
-        }
+        }    
     }
 }
 
 void ConvIm2colLayer::write_best_param(const char *log_path, int &best_mc, int &best_nc, int &best_kc, int &best_rb, int &best_cb, 
-                                       int &best_pc, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c) {
+                                       int &best_pa, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c,
+                                       int &best_mc_pw, int &best_nc_pw) {
     FILE *log_file = fopen(log_path, "a+");
     this->mc = best_mc;
     this->nc = best_nc;
     this->kc = best_kc;
     this->row_batch = best_rb;
     this->col_batch = best_cb;
-    this->pack_c_version = best_pc;
+    this->pack_a_version = best_pa;
     this->mt_pack_b_version = best_pb;
     this->prefetch_a = best_pre_a;
     this->prefetch_b = best_pre_b;
     this->prefetch_c = best_pre_c;
+    this->mc_parallel_ways = best_mc_pw;
+    this->nc_parallel_ways = best_nc_pw;
     if (log_file != nullptr)
-    	fprintf(log_file, "%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d\n", 
+    	fprintf(log_file, "%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d\n", 
                 this->M, this->N, this->K, best_mc, best_nc, best_kc, best_rb, best_cb, 
-                this->gemm_version, best_pc, best_pb, best_pre_a, best_pre_b, best_pre_c, this->num_threads);
+                this->gemm_version, best_pa, best_pb, best_pre_a, best_pre_b, best_pre_c,
+                best_mc_pw, best_nc_pw, this->num_threads);
     else 
 	    printf("write best param error.\n");
     fclose(log_file);
@@ -393,8 +465,8 @@ int ConvIm2colLayer::Init() {
     printf("Algorithm: im2col\n");
     this->set_pack_a();
     this->set_pack_b();
-    this->set_pack_c();
-    this->set_unpack_c();
+    // this->set_pack_c();
+    // this->set_unpack_c();
     this->set_inner_kernel();
     this->set_inner_kernel_for_corner(this->M % row_batch);
     if (gemm_version == GEMM_BLOCKS_MULTI_THREADS) {
@@ -425,9 +497,9 @@ int ConvIm2colLayer::Forward() {
         this->sgemm();
     }
 
-
+#if CHECK
     memset(output_data, 0, sizeof(float) * (M * N + 32));
-
+#endif
     total.startBench();
     for (int i = 0; i < iterations; i++) {
         // im2col_profiler.startBench();
@@ -452,7 +524,7 @@ int ConvIm2colLayer::Forward() {
 
 #if CHECK
     if (output_data_ref != NULL)
-        float dis = diff(output_data_ref, output_data, this->M, this->N);
+        float dis = diff(output_data_ref, output_data, this->M * this->N);
     // printf("c[0] = %f, c[1] = %f, c[2] = %f\n", output_data[0], output_data[1], output_data[2]);
     // printf("c_data_ref[0] = %f, c_data_ref[1] = %f, c_data_ref[2] = %f\n", output_data_ref[0], output_data_ref[1], output_data_ref[2]);
 
@@ -487,9 +559,9 @@ int ConvIm2colLayer::Tuning() {
 	return 1;
     } else {     // the entry dosen't exist
         printf("log entry doesn't exist.\n");
-        int best_mc, best_nc, best_kc, best_rb, best_cb, best_pc, best_pb, best_pre_a, best_pre_b, best_pre_c;
-        this->search_best_param(best_mc, best_nc, best_kc, best_rb, best_cb, best_pc, best_pb, best_pre_a, best_pre_b, best_pre_c);
-        this->write_best_param(log_path, best_mc, best_nc, best_kc, best_rb, best_cb, best_pc, best_pb, best_pre_a, best_pre_b, best_pre_c);
+        int best_mc, best_nc, best_kc, best_rb, best_cb, best_pa, best_pb, best_pre_a, best_pre_b, best_pre_c, best_mc_pw, best_nc_pw;
+        this->search_best_param(best_mc, best_nc, best_kc, best_rb, best_cb, best_pa, best_pb, best_pre_a, best_pre_b, best_pre_c, best_mc_pw, best_nc_pw);
+        this->write_best_param(log_path, best_mc, best_nc, best_kc, best_rb, best_cb, best_pa, best_pb, best_pre_a, best_pre_b, best_pre_c, best_mc_pw, best_nc_pw);
     }
     return 1;
 }
@@ -834,8 +906,11 @@ void ConvIm2colLayer::sgemm() {
             // GEMM_multithread_v2_MKN(kernel_data, transform_input_data, output_data);
             // GEMM_multithread_v3_MKN_2d(kernel_data, transform_input_data, output_data);
             // GEMM_multithread_v4_MKN_2d_no_packa(kernel_data, transform_input_data, output_data);
-            // GEMM_multithread_v5_MKN_2d_outer_no_packa(kernel_data, transform_input_data, output_data);
-            GEMM_multithread_v6_MKN_2d_outer(kernel_data, transform_input_data, output_data);
+            if (!this->pack_a_version)
+                // GEMM_multithread_v7_MKN_2d_outer_nested_no_packa(kernel_data, transform_input_data, output_data);
+				GEMM_multithread_v5_MKN_2d_outer_no_packa(kernel_data, transform_input_data, output_data);
+            else
+                GEMM_multithread_v6_MKN_2d_outer(kernel_data, transform_input_data, output_data);
         break;
     }
 }
@@ -1775,7 +1850,8 @@ void ConvIm2colLayer::GEMM_multithread_v3_MKN_2d(float* A, float* B, float* C) {
                                     this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, prefetch_a, prefetch_b, prefetch_c);
                                 }
                                 else {
-                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, nc_to - remain_col_start,
+                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr,
+                                                                1, ldc, row_batch, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                 }
                                 packB_ptr += packB_step;
@@ -1797,11 +1873,13 @@ void ConvIm2colLayer::GEMM_multithread_v3_MKN_2d(float* A, float* B, float* C) {
                             for (int j = nc_from; j < nc_to; j += col_batch) {
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
-                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch, 
+                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                1, ldc, row_batch_adjust, col_batch, 
                                                                 pg32_true, pg32_true, pg32_true, pg32_true);
                                 }
                                 else {
-                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, nc_to - remain_col_start,
+                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                1, ldc, row_batch_adjust, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                 }
                                 packB_ptr += packB_step;
@@ -2088,25 +2166,25 @@ void ConvIm2colLayer::GEMM_multithread_v4_MKN_2d_no_packa(float* A, float* B, fl
 
                         if (row_batch == 12 && col_batch == 32) {
                             inner_kernel_for_corner_fixm  = 
-                                kernel_MxN_for_12x32_no_packa_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
+                                kernel_MxN_for_12x32_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
                             inner_kernel_for_corner_fixn  = 
-                                kernel_MxN_for_12x32_no_packa_func_tab[remain_row - 1][col_batch/simd_width - 1];
+                                kernel_MxN_for_12x32_func_tab[remain_row - 1][col_batch/simd_width - 1];
                             inner_kernel_for_corner_nofix = 
-                                kernel_MxN_for_12x32_no_packa_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
+                                kernel_MxN_for_12x32_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
                         } else if (row_batch == 8 && col_batch == 48) {
                             inner_kernel_for_corner_fixm  = 
-                                kernel_MxN_for_8x48_no_packa_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
+                                kernel_MxN_for_8x48_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
                             inner_kernel_for_corner_fixn  = 
-                                kernel_MxN_for_8x48_no_packa_func_tab[remain_row - 1][col_batch/simd_width - 1];
+                                kernel_MxN_for_8x48_func_tab[remain_row - 1][col_batch/simd_width - 1];
                             inner_kernel_for_corner_nofix = 
-                                kernel_MxN_for_8x48_no_packa_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
+                                kernel_MxN_for_8x48_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
                         } else if (row_batch == 5 && col_batch == 64) {
                             inner_kernel_for_corner_fixm  = 
-                                kernel_MxN_for_5x64_no_packa_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
+                                kernel_MxN_for_5x64_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
                             inner_kernel_for_corner_fixn  = 
-                                kernel_MxN_for_5x64_no_packa_func_tab[remain_row - 1][col_batch/simd_width - 1];
+                                kernel_MxN_for_5x64_func_tab[remain_row - 1][col_batch/simd_width - 1];
                             inner_kernel_for_corner_nofix = 
-                                kernel_MxN_for_5x64_no_packa_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
+                                kernel_MxN_for_5x64_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
                         }
                     }
                     calculate_index_timer.accumBench();
@@ -2168,11 +2246,12 @@ void ConvIm2colLayer::GEMM_multithread_v4_MKN_2d_no_packa(float* A, float* B, fl
                             for (int j = nc_from; j < nc_to; j += col_batch) {
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
-                                    this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, prefetch_b, prefetch_c);
+                                    this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, prefetch_b, prefetch_c);
                                     // this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, prefetch_b, prefetch_c);
                                 }
                                 else {
-                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, nc_to - remain_col_start,
+                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                     // inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
                                 }
@@ -2184,12 +2263,14 @@ void ConvIm2colLayer::GEMM_multithread_v4_MKN_2d_no_packa(float* A, float* B, fl
                             for (int j = nc_from; j < nc_to; j += col_batch) {
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
-                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, col_batch,
+                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, col_batch,
                                                                 pg32_true, pg32_true, pg32_true, pg32_true);
                             	    // inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, col_batch, pg32_true);
                                 }
                                 else {
-                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, nc_to - remain_col_start,
+                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                 	// inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
                                 }
@@ -2254,25 +2335,25 @@ void select_kernel_for_corner(inner_kernel_for_corner_func_t& inner_kernel_for_c
     
     if (row_batch == 12 && col_batch == 32) {
         inner_kernel_for_corner_fixm  = 
-            kernel_MxN_for_12x32_no_packa_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
+            kernel_MxN_for_12x32_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
         inner_kernel_for_corner_fixn  = 
-            kernel_MxN_for_12x32_no_packa_func_tab[remain_row - 1][col_batch/simd_width - 1];
+            kernel_MxN_for_12x32_func_tab[remain_row - 1][col_batch/simd_width - 1];
         inner_kernel_for_corner_nofix = 
-            kernel_MxN_for_12x32_no_packa_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
+            kernel_MxN_for_12x32_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
     } else if (row_batch == 8 && col_batch == 48) {
         inner_kernel_for_corner_fixm  = 
-            kernel_MxN_for_8x48_no_packa_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
+            kernel_MxN_for_8x48_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
         inner_kernel_for_corner_fixn  = 
-            kernel_MxN_for_8x48_no_packa_func_tab[remain_row - 1][col_batch/simd_width - 1];
+            kernel_MxN_for_8x48_func_tab[remain_row - 1][col_batch/simd_width - 1];
         inner_kernel_for_corner_nofix = 
-            kernel_MxN_for_8x48_no_packa_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
+            kernel_MxN_for_8x48_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
     } else if (row_batch == 5 && col_batch == 64) {
         inner_kernel_for_corner_fixm  = 
-            kernel_MxN_for_5x64_no_packa_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
+            kernel_MxN_for_5x64_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
         inner_kernel_for_corner_fixn  = 
-            kernel_MxN_for_5x64_no_packa_func_tab[remain_row - 1][col_batch/simd_width - 1];
+            kernel_MxN_for_5x64_func_tab[remain_row - 1][col_batch/simd_width - 1];
         inner_kernel_for_corner_nofix = 
-            kernel_MxN_for_5x64_no_packa_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
+            kernel_MxN_for_5x64_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
     }
 }
 
@@ -2287,11 +2368,11 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
     //     pg32_true[i] = pg_true;
 
     const int simd_width = 16;
-
+/*
     printf("kc_parallel_ways = %d, mc_parallel_ways = %d, nc_parallel_ways = %d\n",
             kc_parallel_ways, mc_parallel_ways, nc_parallel_ways);
     printf("mr_parallel_ways = %d, nr_parallel_ways = %d\n", mr_parallel_ways, nr_parallel_ways);
-
+*/
     // int parallel_dim[3] = {1, 1, 1};
     // parallel_dim[2] = this->num_threads;
     // parallel_dim[0] = num_nodes;
@@ -2313,7 +2394,7 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
     size_t size_C;
 
 	Timer init_timer, compute_timer, end_timer;
-	init_timer.startBench();
+	// init_timer.startBench();
     // set range K of every node
     divide_parallel_range(K, kc_parallel_ways, 0, range_k);
 
@@ -2354,13 +2435,16 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
         // float *packB_memory_block = (float*)_mm_malloc(sizeof(float) * size_b);
     }
 
-	init_timer.endBench("init");
-	compute_timer.startBench();
-	fapp_start("bar",1,0);
+	// init_timer.endBench("init");
+	// compute_timer.startBench();
+	// fapp_start("bar",1,0);
     #pragma omp parallel
     {
         Timer init_in_thread_timer, compute_in_thread_timer;
         Timer packA_timer, packB_timer, kernel1_timer, kernel2_timer, calculate_index_timer, barrier_timer;
+
+        float* next_b;
+        bool is_pre_b;
 
         int tid = omp_get_thread_num();
 /*
@@ -2382,6 +2466,9 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
 			// packB_memory_block[tid / 12] = (float*) numa_alloc(align_ceil(sizeof(float) * size_B, 2097152));
             packB_memory_block[thread_group_idx.n] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
         }
+
+        A = reinterpret_cast<float*>(reinterpret_cast<size_t>(A) | 0x0200000000000000ull);
+        C = reinterpret_cast<float*>(reinterpret_cast<size_t>(C) | 0x0100000000000000ull);
 		#pragma omp barrier
 
 
@@ -2483,12 +2570,9 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                     // calculate_index_timer.startBench();
                     // calculate_index_timer.accumBench();
 
-                    packB_timer.startBench();
-                    if (mt == m_from) {
-                        
-						// printf("packB nt = %d, tid = %d, range_nc_for_packB[tid_in_node] = %d, range_nc_for_packB[tid_in_node + 1] = %d\n", nt, tid, 
-						//		range_nc_for_packB[tid_group_idx[1]][tid_idx_in_group[1]], range_nc_for_packB[tid_group_idx[1]][tid_idx_in_group[1] + 1]);
+                    is_pre_b = false;
 
+                    if (mt == m_from) {
                         // calculate_index_timer.startBench();
                         // set range kc of pack B for every thread
                         if (kt == k_from || kc_adjust < kc) {
@@ -2496,38 +2580,50 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                                 memset(range_kc_for_packB[thread_group_idx.n], 0, sizeof(int) * (mc_parallel_ways + 1));
                                 divide_parallel_range(kc_adjust, mc_parallel_ways, 0, range_kc_for_packB[thread_group_idx.n]);
                             }
+                        	#pragma omp barrier
                         }
 
                         // barrier_timer.startBench();
-                        #pragma omp barrier
+#if PROFILE
+                    	packB_timer.startBench();
+#endif
                         // barrier_timer.accumBench();
                         // calculate_index_timer.accumBench();
 						int pack_b_nc_from = nc_from;
 						int pack_b_nc_to = nc_to;
                         int pack_b_kc_from = range_kc_for_packB[thread_group_idx.n][thread_group_idx.m];
                         int pack_b_kc_to = range_kc_for_packB[thread_group_idx.n][thread_group_idx.m + 1];
-                        // printf("tid = %d, nt = %d, pack_b_nt_from = %d, pack_b_nt_to = %d, kt = %d, pack_b_kt_from = %d, pack_b_kt_to = %d\n", tid,
-						// 				  nt, pack_b_nc_from, pack_b_nc_to, 
-						// 				  kt, pack_b_kc_from, pack_b_kc_to);
 
-						if (pack_b_nc_to > pack_b_nc_from && pack_b_kc_to > pack_b_kc_from)
+						if (pack_b_nc_to > pack_b_nc_from && pack_b_kc_to > pack_b_kc_from) {
                         	this->pack_b_mt_2d(kc_adjust, nc_adjust, B + kt*ldb + nt, ldb, packB_copy,
                                             pack_b_nc_from, pack_b_nc_to, pack_b_kc_from, pack_b_kc_to,
                                             row_batch, col_batch);
+                    	    #pragma omp barrier
+                        }
                         // barrier_timer.startBench();
-                    	#pragma omp barrier
+#if PROFILE
+                    	packB_timer.accumBench();
+#endif
                         // barrier_timer.accumBench();
+/*
+                        if (nt + nc_adjust < n_to) {
+                        	is_pre_b = true;
+                            next_b = B + (kt + pack_b_kc_from)*ldb + nt + nc_adjust;
+                        }
+*/
                     }
-                    packB_timer.accumBench();
 
                     float *packC_copy = C + mt*ldc + nt;
                     int remain_col_start = nc_to - (nc_to - nc_from) % this->col_batch;
                     int packB_step = col_batch * kc_adjust;
                     
                     // printf("tid = %d, mt = %d, m_from = %d, m_to = %d, mc_from = %d, mc_to = %d, remain_row = %d\n", tid, mt, m_from, m_to, mc_from, mc_to, remain_row);
-
+#if PROFILE
                     kernel1_timer.startBench();
+#endif
                     for (int i = mc_from; i < mc_to; i += row_batch) {
+                        if (i != mc_from)
+                            is_pre_b = false;
                         int row_batch_adjust = min(row_batch, mc_to - i);
                         float *packA_ptr = packA_copy + i * K;
                         float *packB_ptr = packB_copy + nc_from * kc_adjust;
@@ -2537,13 +2633,22 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
                                     // kernel1_timer.startBench();
-                                    this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, prefetch_b, prefetch_c);
+                                /*    
+                                    if (is_pre_b && this->row_batch == 8) {
+                                        this->inner_kernel_pre_b(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, next_b, ldb);
+                                        next_b += col_batch;
+                                    }
+									
+									else 
+								*/
+                                   		this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, prefetch_b, prefetch_c);
                     				// kernel1_timer.accumBench();
                                     // this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, prefetch_b, prefetch_c);
                                 }
                                 else {
                                     // kernel2_timer.startBench();
-                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, nc_to - remain_col_start,
+                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                     // kernel2_timer.accumBench();
                                     // inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
@@ -2557,14 +2662,16 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
                                     // kernel2_timer.startBench();
-                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, col_batch,
+                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, col_batch,
                                                                 pg32_true, pg32_true, pg32_true, pg32_true);
                                     // kernel2_timer.accumBench();
                             	    // inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, col_batch, pg32_true);
                                 }
                                 else {
                                     // kernel2_timer.startBench();
-                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, lda, nc_to - remain_col_start,
+                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                     // kernel2_timer.accumBench();
                                 	// inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
@@ -2575,7 +2682,9 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                         }
                         
                     }
+#if PROFILE
                     kernel1_timer.accumBench();
+#endif
                     // barrier_timer.startBench();
                     // #pragma omp barrier
                     // barrier_timer.accumBench();
@@ -2583,8 +2692,8 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
             }
         }
 
-/*
 
+/*
         // compute_in_thread_timer.endBench("compute in thread");
         if (tid == 36) {
         // //    packA_timer.printBench("packA time", 1, tid);
@@ -2626,8 +2735,12 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
         //     barrier_timer.printBench("barrier time", 1, tid);
 		// 	calculate_index_timer.printBench("calculate_index time", 1, tid);
         }
-*/
 
+*/
+#if PROFILE
+            packB_timer.printBench("packB time", 1, tid);
+            kernel1_timer.printBench("kernel1 time", 1, tid);
+#endif
 /*
 		if (tid == 46)
 			compute_in_thread_timer.endBench("compute in thread");
@@ -2637,16 +2750,16 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
         // free(pg32);
 
     }
-	fapp_stop("bar",1,0);
-	compute_timer.endBench("compute");
-	end_timer.startBench();
+	// fapp_stop("bar",1,0);
+	// compute_timer.endBench("compute");
+	// end_timer.startBench();
     // for (int i = 0; i < num_nodes; i++) {
     //     #pragma omp parallel forF
     //     for (int j = 0; j < M * N; j++) {
     //         C[j] += packC_memory_block[i*packC_memory_block_size_per_node + j];
     //     }
     // }
-	end_timer.endBench("end");
+	// end_timer.endBench("end");
     for (int i = 0; i < nc_parallel_ways; i++) {
        	_mm_free(packB_memory_block[i]);
         // numa_free(packB_memory_block[i], align_ceil(sizeof(float) * size_B, 2097152));
@@ -2669,9 +2782,10 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
 
     const int simd_width = 16;
 
-    printf("kc_parallel_ways = %d, mc_parallel_ways = %d, nc_parallel_ways = %d\n",
-            kc_parallel_ways, mc_parallel_ways, nc_parallel_ways);
-    printf("mr_parallel_ways = %d, nr_parallel_ways = %d\n", mr_parallel_ways, nr_parallel_ways);
+    // printf("kc_parallel_ways = %d, mc_parallel_ways = %d, nc_parallel_ways = %d\n",
+    //         kc_parallel_ways, mc_parallel_ways, nc_parallel_ways);
+    // printf("mr_parallel_ways = %d, nr_parallel_ways = %d\n", 
+    //         mr_parallel_ways, nr_parallel_ways);
 
     // int parallel_dim[3] = {1, 1, 1};
     // parallel_dim[2] = this->num_threads;
@@ -2694,7 +2808,7 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
     size_t size_C;
 
 	Timer init_timer, compute_timer, end_timer;
-	init_timer.startBench();
+	// init_timer.startBench();
     // set range K of every node
     divide_parallel_range(K, kc_parallel_ways, 0, range_k);
 
@@ -2729,9 +2843,9 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
         // float *packB_memory_block = (float*)_mm_malloc(sizeof(float) * size_b);
     }
 
-	init_timer.endBench("init");
-	compute_timer.startBench();
-	fapp_start("bar",1,0);
+	// init_timer.endBench("init");
+	// compute_timer.startBench();
+	// fapp_start("bar",1,0);
     #pragma omp parallel
     {
         Timer init_in_thread_timer, compute_in_thread_timer;
@@ -2750,11 +2864,19 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
         thread_idx_in_group.m = thread_group_idx.n;
         thread_idx_in_group.n = thread_group_idx.m;
 
+        // calculate_index_timer.startBench();
         if (thread_idx_in_group.n == 0) {
 			// packB_memory_block[tid / 12] = (float*) numa_alloc(align_ceil(sizeof(float) * size_B, 2097152));
+            // if (!packB_memory_block[thread_group_idx.n])
             packB_memory_block[thread_group_idx.n] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
+                // packB_memory_block[thread_group_idx.n] = (float*)mmap(NULL, sizeof(float) * size_B, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
         }
+        // calculate_index_timer.accumBench();
         packA_memory_block = (float*)_mm_malloc(sizeof(float) * size_A, 256);
+        float *packA_memory_block_copy = reinterpret_cast<float*>(reinterpret_cast<size_t>(packA_memory_block) | 0x4200000000000000ull);
+        C = reinterpret_cast<float*>(reinterpret_cast<size_t>(C) | 0x0100000000000000ull);
+        // float *packA_memory_block_copy = packA_memory_block;
+
 		#pragma omp barrier
 
         int k_from = range_k[0];
@@ -2784,6 +2906,10 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
             inner_kernel_for_corner_fixm  = kernel_MxN_for_8x48_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
             inner_kernel_for_corner_fixn  = kernel_MxN_for_8x48_func_tab[remain_row - 1][col_batch/simd_width - 1];
             inner_kernel_for_corner_nofix = kernel_MxN_for_8x48_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
+        } else if (row_batch == 5 && col_batch == 64) {
+            inner_kernel_for_corner_fixm  = kernel_MxN_for_5x64_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
+            inner_kernel_for_corner_fixn  = kernel_MxN_for_5x64_func_tab[remain_row - 1][col_batch/simd_width - 1];
+            inner_kernel_for_corner_nofix = kernel_MxN_for_5x64_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
         } 
 
         // svbool_t* pg32 = (svbool_t*)malloc(4 * sizeof(svbool_t));
@@ -2823,13 +2949,13 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                     // printf("------mt = %d--------\n", mt);
                 // packA_timer.startBench();
                 // packA_timer.accumBench();
-                packA_timer.startBench();
+                // packA_timer.startBench();
                 // #pragma omp barrier
-                float *packA_copy = packA_memory_block;
+                float *packA_copy = packA_memory_block_copy;
                 this->pack_a_mt(mc_adjust, kc_adjust, A + mt*lda + kt, lda, packA_copy, mc, kc, nc, 
                     	            mc_from, mc_to, row_batch, col_batch);
                 // #pragma omp barrier
-                packA_timer.accumBench();
+                // packA_timer.accumBench();
 
                 // printf("packA over mt = %d, tid = %d\n", mt, tid);
                 for (int nt = n_from; nt < n_to; nt += nc) {
@@ -2849,7 +2975,7 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                     // calculate_index_timer.startBench();
                     // calculate_index_timer.accumBench();
 
-                    packB_timer.startBench();
+                    // packB_timer.startBench();
                     if (mt == m_from) {
                         
 						// printf("packB nt = %d, tid = %d, range_nc_for_packB[tid_in_node] = %d, range_nc_for_packB[tid_in_node + 1] = %d\n", nt, tid, 
@@ -2867,7 +2993,6 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                         // barrier_timer.startBench();
                         #pragma omp barrier
                         // barrier_timer.accumBench();
-                        // calculate_index_timer.accumBench();
 						int pack_b_nc_from = nc_from;
 						int pack_b_nc_to = nc_to;
                         int pack_b_kc_from = range_kc_for_packB[thread_group_idx.n][thread_group_idx.m];
@@ -2883,8 +3008,23 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                         // barrier_timer.startBench();
                     	#pragma omp barrier
                         // barrier_timer.accumBench();
+                        /*
+						if (thread_idx_in_group.n == 0) {
+							size_t n_page = (sizeof(float) * size_B + (PAGE_SIZE - 1)) / PAGE_SIZE;
+							int status[n_page];
+							void* pages[n_page];
+							for (size_t i = 0; i < n_page; i++)
+								pages[i] = &((char*)packB_memory_block[thread_group_idx.n])[i * 2097152];
+							if (0 != move_pages(0, n_page, pages, NULL, status, 0))
+								printf("failed to inquiry pages because errno %d\n", strerror(errno));
+							for (size_t i = 0; i < n_page; i++) {
+								printf("tid = %d, page_in_nodes = %d\n", tid, status[i]);
+							}
+						}
+                        */
+						
                     }
-                    packB_timer.accumBench();
+                    // packB_timer.accumBench();
 
                     float *packC_copy = C + mt*ldc + nt;
                     int remain_col_start = nc_to - (nc_to - nc_from) % this->col_batch;
@@ -2892,7 +3032,7 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                     
                     // printf("tid = %d, mt = %d, m_from = %d, m_to = %d, mc_from = %d, mc_to = %d, remain_row = %d\n", tid, mt, m_from, m_to, mc_from, mc_to, remain_row);
 
-                    kernel1_timer.startBench();
+                    // kernel1_timer.startBench();
                     for (int i = mc_from; i < mc_to; i += row_batch) {
                         int row_batch_adjust = min(row_batch, mc_to - i);
                         float *packA_ptr = packA_copy + i * kc_adjust;
@@ -2903,13 +3043,14 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
                                     // kernel1_timer.startBench();
-                                    this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, prefetch_b, prefetch_c);
+                                    this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, prefetch_a, prefetch_b, prefetch_c);
                     				// kernel1_timer.accumBench();
                                     // this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, prefetch_b, prefetch_c);
                                 }
                                 else {
                                     // kernel2_timer.startBench();
-                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, nc_to - remain_col_start,
+                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                1, ldc, row_batch, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                     // kernel2_timer.accumBench();
                                     // inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
@@ -2923,14 +3064,16 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
                                     // kernel2_timer.startBench();
-                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch,
+                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                1, ldc, row_batch_adjust, col_batch,
                                                                 pg32_true, pg32_true, pg32_true, pg32_true);
                                     // kernel2_timer.accumBench();
                             	    // inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, col_batch, pg32_true);
                                 }
                                 else {
                                     // kernel2_timer.startBench();
-                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, nc_to - remain_col_start,
+                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                1, ldc, row_batch_adjust, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
                                     // kernel2_timer.accumBench();
                                 	// inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
@@ -2941,7 +3084,8 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
                         }
                         
                     }
-                    kernel1_timer.accumBench();
+					// #pragma omp barrier
+                    // kernel1_timer.accumBench();
                     // barrier_timer.startBench();
                     // #pragma omp barrier
                     // barrier_timer.accumBench();
@@ -2949,8 +3093,8 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
             }
         }
 
-/*
 
+/*
         // compute_in_thread_timer.endBench("compute in thread");
         if (tid == 36) {
              packA_timer.printBench("packA time", 1, tid);
@@ -2958,7 +3102,7 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
              kernel1_timer.printBench("kernel1 time", 1, tid);
              kernel2_timer.printBench("kernel2 time", 1, tid);
         //     barrier_timer.printBench("barrier time", 1, tid);
-		// 	calculate_index_timer.printBench("calculate_index time", 1, tid);
+		   	 calculate_index_timer.printBench("calculate_index time", 1, tid);
         }
         if (tid == 46) {
              packA_timer.printBench("packA time", 1, tid);
@@ -3006,19 +3150,28 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
         // other_timer.printBench("other time", 1, tid);
         // _mm_free(packB_memory_block);
         // free(pg32);
+        /*
+        #pragma omp barrier
+        if (thread_idx_in_group.n == 0) {
+			// packB_memory_block[tid / 12] = (float*) numa_alloc(align_ceil(sizeof(float) * size_B, 2097152));
+            // packB_memory_block[thread_group_idx.n] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
+            // munmap((void*)(packB_memory_block[thread_group_idx.n]), sizeof(float) * size_B);
+       		_mm_free(packB_memory_block[thread_group_idx.n]);
+        }
+		*/
         _mm_free(packA_memory_block);
 
     }
-	fapp_stop("bar",1,0);
-	compute_timer.endBench("compute");
-	end_timer.startBench();
+	// fapp_stop("bar",1,0);
+	// compute_timer.endBench("compute");
+	// end_timer.startBench();
     // for (int i = 0; i < num_nodes; i++) {
     //     #pragma omp parallel forF
     //     for (int j = 0; j < M * N; j++) {
     //         C[j] += packC_memory_block[i*packC_memory_block_size_per_node + j];
     //     }
     // }
-	end_timer.endBench("end");
+	// end_timer.endBench("end");
     for (int i = 0; i < nc_parallel_ways; i++) {
        	_mm_free(packB_memory_block[i]);
         // numa_free(packB_memory_block[i], align_ceil(sizeof(float) * size_B, 2097152));
@@ -3029,132 +3182,155 @@ void ConvIm2colLayer::GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float
         
 }
 
-void ConvIm2colLayer::GEMM_multithread_v2_MKN(float* A, float* B, float* C) {
+void ConvIm2colLayer::GEMM_multithread_v7_MKN_2d_outer_nested_no_packa(float* A, float* B, float* C) {
     int lda = K;
     int ldb = N;
     int ldc = N;
 
-    int packB_width;
-    int packB_height;
-    int packBC_width;
-    int packBC_height;
-
-    const int cores_per_node = 12;
-    const int num_threads = this->num_threads;
-    const int num_nodes = (num_threads + cores_per_node - 1) / cores_per_node;
-
     svbool_t pg32_true = svptrue_b32();
-	// svbool_t* pg32_true = (svbool_t*)malloc(4 * sizeof(svbool_t));
+    // svbool_t* pg32_true = (svbool_t*)malloc(4 * sizeof(svbool_t));
     // for (int i = 0; i < 4; i++)
     //     pg32_true[i] = pg_true;
 
     const int simd_width = 16;
-    printf("num_thread = %d, num_nodes = %d\n", num_threads, num_nodes);
+/*
+    printf("kc_parallel_ways = %d, mc_parallel_ways = %d, nc_parallel_ways = %d\n",
+            kc_parallel_ways, mc_parallel_ways, nc_parallel_ways);
+    printf("mr_parallel_ways = %d, nr_parallel_ways = %d\n", mr_parallel_ways, nr_parallel_ways);
+*/
+    // int parallel_dim[3] = {1, 1, 1};
+    // parallel_dim[2] = this->num_threads;
+    // parallel_dim[0] = num_nodes;
+    int range_k[kc_parallel_ways + 1];
+    int range_m[mc_parallel_ways + 1];
+    int range_n[nc_parallel_ways + 1];
 
-    int range_k[num_nodes + 1];
-    int range_n[num_threads + 1];
-    int range_m[num_threads + 1];
-    
-    inner_kernel_for_corner_func_t inner_kernel_array_for_corner_fixm[num_threads];
-    inner_kernel_for_corner_func_t inner_kernel_array_for_corner_fixn[num_threads];
-    inner_kernel_for_corner_func_t inner_kernel_array_for_corner_nofix[num_threads];
+    // int range_nc_for_packB[nc_parallel_ways][nr_parallel_ways][mr_parallel_ways + 1];
+    // int range_kc_for_packB[nr_parallel_ways][mr_parallel_ways + 1];
+    int range_kc_for_packB[nc_parallel_ways][mc_parallel_ways + 256];
 
     float *packA_memory_block;
+    float *packB_memory_block[nc_parallel_ways];
     float *packC_memory_block;
+    // float *packC_memory_block[nc_parallel_ways];
+
+    size_t size_A;
+    size_t size_B;
+    size_t size_C;
 
 	Timer init_timer, compute_timer, end_timer;
-	init_timer.startBench();
+	// init_timer.startBench();
     // set range K of every node
-    range_k[0] = 0;
-    for (int temp_k = K, temp_width = 0, temp_node_idx = 0; temp_k > 0; temp_node_idx++) {
-        temp_width = (temp_k + num_nodes - temp_node_idx - 1) / (num_nodes - temp_node_idx);
-        temp_k -= temp_width;
-        if (temp_k < 0)
-            temp_width += temp_k;
-        range_k[temp_node_idx + 1] = range_k[temp_node_idx] + temp_width;
-    }
+    divide_parallel_range(K, kc_parallel_ways, 0, range_k);
+
+    // set range M of every node
+    divide_parallel_range(M, mc_parallel_ways, 0, range_m);
     
-    // set range N of every thread
-    int remain_row = this->M % this->row_batch;
-    int remain_col;
-    range_n[0] = 0;
-    for (int temp_n = N, temp_width = 0, temp_thr_idx = 0; temp_n > 0; temp_thr_idx++) {
-        temp_width = (temp_n + num_threads - temp_thr_idx - 1) / (num_threads - temp_thr_idx);
-        temp_n -= temp_width;
-        if (temp_n < 0) 
-            temp_width += temp_n;
-        range_n[temp_thr_idx + 1] = range_n[temp_thr_idx] + temp_width;
-        remain_col = temp_width % this->col_batch;
-        if (row_batch == 12 && col_batch == 32) {
-            inner_kernel_array_for_corner_fixm[temp_thr_idx]  = kernel_MxN_for_12x32_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
-            inner_kernel_array_for_corner_fixn[temp_thr_idx]  = kernel_MxN_for_12x32_func_tab[remain_row - 1][col_batch/simd_width - 1];
-            inner_kernel_array_for_corner_nofix[temp_thr_idx] = kernel_MxN_for_12x32_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
-        } else if (row_batch == 8 && col_batch == 48) {
-            inner_kernel_array_for_corner_fixm[temp_thr_idx]  = kernel_MxN_for_8x48_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
-            inner_kernel_array_for_corner_fixn[temp_thr_idx]  = kernel_MxN_for_8x48_func_tab[remain_row - 1][col_batch/simd_width - 1];
-            inner_kernel_array_for_corner_nofix[temp_thr_idx] = kernel_MxN_for_8x48_func_tab[remain_row - 1][(remain_col + simd_width-1)/simd_width - 1];
-        }
-        // printf("tid = %d, remain_col = %d, remain_row = %d\n", temp_thr_idx, remain_col, remain_row);
-    }
-    range_n[num_threads] = N;
-
-    // printf("range_n[1] = %d, range_n[2] = %d\n", range_n[1], range_n[2]);
-
-    const size_t packA_memory_block_size_per_node = mc * (range_k[1]-range_k[0]) + 64;
-	// printf("packA_size = %u\n", packA_memory_block_size_per_node);
-    const size_t packC_memory_block_size_per_node = M * N + 64;
+    // set range N of every node
+    divide_parallel_range(N, nc_parallel_ways, 0, range_n);
 
     // numa memory initializaion
-    if (num_nodes >= 1) {
-        size_t size_a = packA_memory_block_size_per_node * num_nodes;
-        packA_memory_block = (float*)_mm_malloc(sizeof(float) * size_a);
-        // #pragma omp parallel for schedule(static)
-        // for (size_t i = 0; i < size_a; i++) {
-        //     packA_memory_block[i] = 0.0f;
-        // }
-
-        size_t size_c = packC_memory_block_size_per_node * num_nodes;
-        packC_memory_block = (float*)_mm_malloc(sizeof(float) * size_c);
-        // #pragma omp parallel for schedule(static)
-        // for (size_t i = 0; i < size_c; i++) {
-        //     packC_memory_block[i] = 0.0f;
-        // }
+    size_B = (size_t)(K) * (size_t)(range_n[1] - range_n[0]) + 128;
+    // size_C = (size_t)(M) * (size_t)(range_n[1] - range_n[0]) + 128;
+    size_C = (size_t)(M) * (size_t)(N) + 128;
+    // printf("M = %d, nc_parallel_ways = %d, range_n = %d, range_m = %d\n", M, nc_parallel_ways, range_n[1] - range_n[0], range_m[1] - range_m[0]);
+    // numa_set_strict(1); 
+    for (int i = 0; i < nc_parallel_ways; i++) {
+        // packB_memory_block[i] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
+        // memset(packC_memory_block[i], 0, sizeof(float) * size_C);
+		// packB_memory_block[i] = (float*)numa_alloc_onnode(((size_t)16 * 2097152), i + 4);
+        // packB_memory_block[i] = (float*)_mm_malloc(sizeof(float) * size_B);
+        // packC_memory_block[i] = (float*)_mm_malloc(sizeof(float) * size_C);
     }
-    size_t size_b = (size_t)(K) * (size_t)(align_ceil(N, this->col_batch)) + 64;
-    float *packB_memory_block = (float*)_mm_malloc(sizeof(float) * size_b);
 
-	init_timer.endBench("init");
-	printf("---------initializaion work done.---------\n");
-	compute_timer.startBench();
+
+    // numa node parallism in M
+    if (mc_parallel_ways > 1) {
+        // Todo - packA memory allocation
+    }
+    // numa node parallism in N
+    else if (nc_parallel_ways >= 1) {
+        
+    } 
+    // no parallism on numa node
+    else if (mc_parallel_ways == 1 && nc_parallel_ways == 1 && kc_parallel_ways == 1) {
+        // Todo - memory allocation
+        // // Actually it doesn't need paddings any more, since the predicate register is used in this implements
+        // size_t size_b = (size_t)(K) * (size_t)(N) + 64;  
+        // float *packB_memory_block = (float*)_mm_malloc(sizeof(float) * size_b);
+    }
+
+	// init_timer.endBench("init");
+	// compute_timer.startBench();
+	// fapp_start("bar",1,0);
     #pragma omp parallel
     {
-        // Timer init_in_thread_timer, compute_in_thread_timer;
-        // init_in_thread_timer.startBench();
-        // Timer packA_timer, packB_timer, kernel1_timer, kernel2_timer;
+        Timer init_in_thread_timer, compute_in_thread_timer;
+        Timer packA_timer, packB_timer, kernel1_timer, kernel2_timer, calculate_index_timer, barrier_timer;
 
         int tid = omp_get_thread_num();
-        int nid = tid / cores_per_node;
+/*
+		if (tid == 46)
+        	init_in_thread_timer.startBench();
+*/
+        // int tid_in_node = tid % (mc_parallel_ways * mr_parallel_ways * nr_parallel_ways);
+        // in which node
+        Thread_group_idx thread_group_idx;
+        thread_group_idx.m = tid % (mc_parallel_ways * mr_parallel_ways * nr_parallel_ways);
+        thread_group_idx.n = tid / (mc_parallel_ways * mr_parallel_ways * nr_parallel_ways);
 
-        int k_from = range_k[nid];
-        int k_to = range_k[nid+1];
-        // int n_from = range_n[tid];
-        // int n_to = range_n[tid+1];
-        int n_from = 0;
-        int n_to = N;
-        int k_step = k_to - k_from;
-        int n_step = align_ceil(n_to - n_from, this->col_batch);
-        int remain_col = (n_to - n_from) % this->col_batch;
+        Thread_idx_in_group thread_idx_in_group;
+        thread_idx_in_group.m = thread_group_idx.n;
+        thread_idx_in_group.n = thread_group_idx.m;
 
-        inner_kernel_for_corner_func_t inner_kernel_for_corner_fixm = inner_kernel_array_for_corner_fixm[tid];
-        inner_kernel_for_corner_func_t inner_kernel_for_corner_fixn = inner_kernel_array_for_corner_fixn[tid];
-        inner_kernel_for_corner_func_t inner_kernel_for_corner_nofix = inner_kernel_array_for_corner_nofix[tid];
+
+        // if (thread_idx_in_group.n == 0) {
+		// 	// packB_memory_block[tid / 12] = (float*) numa_alloc(align_ceil(sizeof(float) * size_B, 2097152));
+        //     packB_memory_block[thread_group_idx.n] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
+        // }
+
+        A = reinterpret_cast<float*>(reinterpret_cast<size_t>(A) | 0x0200000000000000ull);
+        C = reinterpret_cast<float*>(reinterpret_cast<size_t>(C) | 0x0100000000000000ull);
+		#pragma omp barrier
+
+
+
+        // int cpu = sched_getcpu();
+        // int node = numa_node_of_cpu(cpu);
+        // printf("tid = %d, cpu = %d, node = %d\n", tid, cpu, node);
+
+        int k_from = range_k[0];
+        int k_to = range_k[1];
+        int m_from = range_m[thread_group_idx.m];
+        int m_to = range_m[thread_group_idx.m + 1];
+        int n_from = range_n[thread_group_idx.n];
+        int n_to = range_n[thread_group_idx.n + 1];
+
+        // if (tid == 11) {
+        //     printf("n_from = %d, n_to = %d, tid = %d\n", n_from, n_to, tid);
+        // }
+        int k_len = k_to - k_from;
+        int n_len = n_to - n_from;
+	    // printf("k_from = %d, k_to = %d\n", k_from, k_to);
+		// printf("tid = %d, n_from = %d, n_to = %d, remain_col = %d\n", tid, n_from, n_to, remain_col);
+
+        inner_kernel_for_corner_func_t inner_kernel_for_corner_fixm;
+        inner_kernel_for_corner_func_t inner_kernel_for_corner_fixn;
+        inner_kernel_for_corner_func_t inner_kernel_for_corner_nofix;
+
+        int remain_row = (m_to - m_from) % row_batch;
+        int remain_col = (n_to - n_from) % col_batch;
+
+        select_kernel_for_corner(inner_kernel_for_corner_fixm,
+                                 inner_kernel_for_corner_fixn,
+                                 inner_kernel_for_corner_nofix,
+                                 row_batch, col_batch,
+                                 remain_row, remain_col,
+                                 simd_width);
 
         // svbool_t* pg32 = (svbool_t*)malloc(4 * sizeof(svbool_t));
-        // svbool_t* pg32_true = (svbool_t*)malloc(4 * sizeof(svbool_t));
-        // for (int i = 0; i < 4; i++)
-        //     pg32_true[i] = pg_true;
+        svbool_t* pg32 = nullptr;
         svbool_t pg32_0, pg32_1, pg32_2, pg32_3;
-
         pg32_0 = (remain_col < 1 * simd_width ? 
                     svwhilelt_b32(0, remain_col) : svptrue_b32());
         pg32_1 = (remain_col > 1 * simd_width && remain_col < 2 * simd_width ? 
@@ -3164,141 +3340,233 @@ void ConvIm2colLayer::GEMM_multithread_v2_MKN(float* A, float* B, float* C) {
         pg32_3 = (remain_col > 3 * simd_width ? 
                     svwhilelt_b32(0, remain_col - 3 * simd_width) : svptrue_b32());
 
-        // allocate packB memory block
-        // size_t size_b = (size_t)(k_step) * (size_t)(n_step) + 256;
-        // float *packB_memory_block = (float*)_mm_malloc(sizeof(float) * size_b);
-        // for (size_t i = 0; i < size_b; i++)
-        //    packB_memory_block[i] = 0.0f;
         
-	    // init_in_thread_timer.endBench("init in thread");
-        // compute_in_thread_timer.startBench();
-
         // GEMM main subroutine
-        for (int mt = 0; mt < M; mt += mc) {
-            int mc_adjust = min(mc, M - mt);
+        // for (int mt = m_from; mt < m_to; mt += mc) {
+        //     int mc_adjust = min(mc, m_to - mt);
+        //     int mc_from = 0;
+        //     int mc_to = mc_adjust;
 
-            for (int kt = k_from; kt < k_to; kt += kc) {
-                int kc_adjust = min(kc, k_to - kt);
+            // calculate_index_timer.startBench();
+            // calculate_index_timer.accumBench();
+        for (int kt = k_from; kt < k_to; kt += kc) {
+            int kc_adjust = min(kc, k_to - kt);
+            for (int nt = n_from; nt < n_to; nt += nc) {
+                    int nc_adjust = min(nc, n_to - nt);
+                    int nc_from = 0;
+                    int nc_to = nc_adjust;
+            
+            // for (int kt = k_from; kt < k_to; kt += kc) {
+            //     int kc_adjust = min(kc, k_to - kt);
 			    // printf("tid = %d, kt = %d\n", tid, kt);
 
-                float *packA_copy = packA_memory_block + nid*packA_memory_block_size_per_node;
+                for (int mt = m_from; mt < m_to; mt += mc) {
+                    int mc_adjust = min(mc, m_to - mt);
+                    int mc_from = 0;
+                    int mc_to = mc_adjust;
+				// printf("tid_group_idx[0] = %d\n", tid_group_idx[0]);
+                    float *packA_copy = A + mt * K + kt;
 
-                // master thread in every node is responsible to remote load A and pack A
-                // if (tid % cores_per_node == 0) {
-					// printf("packA begin mt = %d, tid = %d\n", mt, tid);
-                    // packA_timer.startBench();
                     // printf("------mt = %d--------\n", mt);
-                    this->pack_a(mc_adjust, kc_adjust, A + mt*lda + kt, lda, packA_copy, mc, kc, nc, row_batch, col_batch);
-                    // packA_timer.accumBench();
-					// printf("packA over mt = %d, tid = %d\n", mt, tid);
-                // }
+                // packA_timer.startBench();
+                // packA_timer.accumBench();
 
-                for (int nt = n_from; nt < n_to; nt += nc) {
-                    int nc_adjust = min(nc, n_to - nt);
-                    float *packB_copy = packB_memory_block + kt * n_step + (nt - n_from) * kc_adjust;
+                // for (int nt = n_from; nt < n_to; nt += nc) {
+                //     int nc_adjust = min(nc, n_to - nt);
+                //     int nc_from = 0;
+                //     int nc_to = nc_adjust;
+                    float *packB_copy = B + kt * ldb + nt;
+                    // float *packB_copy = packB_memory_block[thread_group_idx.n] 
+                    //                     + kt * n_len
+                    //                     + (nt - n_from) * kc_adjust;
+                    // printf("tid = %d, node_id = %d, nt = %d, n_from = %d, n_to = %d, nc_from = %d, nc_to = %d\n", tid, tid / 12, nt, n_from, n_to, nc_from, nc_to);
 
 					// printf("tid = %d, nt = %d, nc_adjust = %d, packA[0] = %f, packA[1] = %f, packA[2] = %f \n",
                     //         tid, nt, nc_adjust, packA_copy[0], packA_copy[1], packA_copy[2]);
 
-                    if (mt == 0) {
-                        // packB_timer.startBench();
-						// printf("packB nt = %d, tid = %d\n", nt, tid);
-                        // #pragma omp master
-                        // {
-                            this->pack_b(kc_adjust, nc_adjust, B + kt*ldb + nt, ldb, packB_copy, row_batch, col_batch);
-                        // }
-                        // packB_timer.accumBench();
-                    }
+                    // calculate_index_timer.startBench();
+                    // calculate_index_timer.accumBench();
 
-                    float *packC_copy = C + nid*packC_memory_block_size_per_node + mt*ldc + nt;
+                    // packB_timer.startBench();
+                    // if (mt == m_from) {
+                    //     // calculate_index_timer.startBench();
+                    //     // set range kc of pack B for every thread
+                    //     if (kt == k_from || kc_adjust < kc) {
+                    //         if (thread_idx_in_group.n == 0) {
+                    //             memset(range_kc_for_packB[thread_group_idx.n], 0, sizeof(int) * (mc_parallel_ways + 1));
+                    //             divide_parallel_range(kc_adjust, mc_parallel_ways, 0, range_kc_for_packB[thread_group_idx.n]);
+                    //         }
+                    //     }
 
-                    int remain_col_start = nc_adjust - nc_adjust % col_batch;
-                    int remain_row_start = mc_adjust - mc_adjust % row_batch;
-                    int packB_step = col_batch * kc_adjust;
+                    //     // barrier_timer.startBench();
+                         // #pragma omp barrier
+                    //     // barrier_timer.accumBench();
+                    //     // calculate_index_timer.accumBench();
+					// 	int pack_b_nc_from = nc_from;
+					// 	int pack_b_nc_to = nc_to;
+                    //     int pack_b_kc_from = range_kc_for_packB[thread_group_idx.n][thread_group_idx.m];
+                    //     int pack_b_kc_to = range_kc_for_packB[thread_group_idx.n][thread_group_idx.m + 1];
+                    //     // printf("tid = %d, nt = %d, pack_b_nt_from = %d, pack_b_nt_to = %d, kt = %d, pack_b_kt_from = %d, pack_b_kt_to = %d\n", tid,
+					// 	// 				  nt, pack_b_nc_from, pack_b_nc_to, 
+					// 	// 				  kt, pack_b_kc_from, pack_b_kc_to);
 
-                    // kernel1_timer.startBench();
-                    #pragma omp for 
-                    for (int i = 0; i < mc_adjust; i += row_batch) {
-                        int mm = min(row_batch, mc_adjust - i);
-                        float *packA_ptr = packA_copy + i * kc_adjust;
-                        float *packB_ptr = packB_copy;
-                        float *packC_ptr = packC_copy + i * ldc;
-                        if (mm == row_batch) {
-                            for (int j = 0; j < remain_col_start; j += col_batch) {
-                                this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, prefetch_a, prefetch_b, prefetch_c);
-                                packB_ptr += packB_step;
+					// 	if (pack_b_nc_to > pack_b_nc_from && pack_b_kc_to > pack_b_kc_from)
+                    //     	this->pack_b_mt_2d(kc_adjust, nc_adjust, B + kt*ldb + nt, ldb, packB_copy,
+                    //                         pack_b_nc_from, pack_b_nc_to, pack_b_kc_from, pack_b_kc_to,
+                    //                         row_batch, col_batch);
+                    //     // barrier_timer.startBench();
+                    // 	#pragma omp barrier
+                    //     // barrier_timer.accumBench();
+                    // }
+                    // packB_timer.accumBench();
+
+                    float *packC_copy = C + mt * ldc + nt;
+                    int remain_col_start = nc_to - (nc_to - nc_from) % this->col_batch;
+                    // int packB_step = col_batch * kc_adjust;
+                    
+                    // printf("tid = %d, mt = %d, m_from = %d, m_to = %d, mc_from = %d, mc_to = %d, remain_row = %d\n", tid, mt, m_from, m_to, mc_from, mc_to, remain_row);
+
+                    kernel1_timer.startBench();
+                    for (int i = mc_from; i < mc_to; i += row_batch) {
+                        int row_batch_adjust = min(row_batch, mc_to - i);
+                        float *packA_ptr = packA_copy + i * K;
+                        // float *packB_ptr = packB_copy + nc_from * kc_adjust;
+                        float *packB_ptr = packB_copy + nc_from;
+                        float *packC_ptr = packC_copy + i * N + nc_from;
+                        if (row_batch_adjust == row_batch) {
+                            for (int j = nc_from; j < nc_to; j += col_batch) {
+                                int col_batch_adjust = min(col_batch, nc_to - j);
+                                if (col_batch_adjust == col_batch) {
+                                    // kernel1_timer.startBench();
+                                /*    
+                                    if (is_pre_b && this->row_batch == 8) {
+                                        this->inner_kernel_pre_b(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, next_b, ldb);
+                                        next_b += col_batch;
+                                    }
+									
+									else 
+								*/
+                                   	this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldb, ldc, prefetch_c);
+                    				// kernel1_timer.accumBench();
+                                    // this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, prefetch_b, prefetch_c);
+                                }
+                                else {
+                                    // kernel2_timer.startBench();
+                                    inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, ldb,
+                                                                pg32_0, pg32_1, pg32_2, pg32_3);
+                                    // kernel2_timer.accumBench();
+                                    // inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
+                                }
+                                packB_ptr += col_batch;
                                 packC_ptr += col_batch;
                             }
-                            // there are some remain numbers in column
-                            if (remain_col_start < nc_adjust)
-                                inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch,
-                                                            pg32_0, pg32_1, pg32_2, pg32_3);
+
                         } else {
-                            for (int j = 0; j < remain_col_start; j += col_batch) {
-                                inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch,
-                                                            pg32_true, pg32_true, pg32_true, pg32_true);
-                                packB_ptr += packB_step;
+                            for (int j = nc_from; j < nc_to; j += col_batch) {
+                                int col_batch_adjust = min(col_batch, nc_to - j);
+                                if (col_batch_adjust == col_batch) {
+                                    // kernel2_timer.startBench();
+                            	    inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, ldb,
+                                                                pg32_true, pg32_true, pg32_true, pg32_true);
+                                    // kernel2_timer.accumBench();
+                            	    // inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, col_batch, pg32_true);
+                                }
+                                else {
+                                    // kernel2_timer.startBench();
+                                	inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                                lda, ldc, 1, ldb,
+                                                                pg32_0, pg32_1, pg32_2, pg32_3);
+                                    // kernel2_timer.accumBench();
+                                	// inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
+                                }
+                                packB_ptr += col_batch;
                                 packC_ptr += col_batch;
                             }
-                            if (remain_col_start < nc_adjust)
-                                inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch,
-                                                            pg32_0, pg32_1, pg32_2, pg32_3);
                         }
                         
                     }
-                    // kernel1_timer.accumBench();
-
-                    // kernel2_timer.startBench();
-                    // #pragma omp master
-                    // {
-                        // if (remain_row_start < mc_adjust) {
-                        //     float *packA_ptr = packA_copy + remain_row_start * kc_adjust;
-                        //     float *packB_ptr = packB_copy;
-                        //     float *packC_ptr = packC_copy + remain_row_start * ldc;
-                        //     for (int j = 0; j < remain_col_start; j += col_batch) {
-                        //         inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, pg_true, pg_true, pg_true);
-                        //         packB_ptr += packB_step;
-                        //         packC_ptr += col_batch;
-                        //     }
-                        //     if (remain_col_start < nc_adjust)
-                        //         inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, ldc, pg_v1, pg_v2, pg_v3);
-                        // }
-                    // }
-                    // kernel2_timer.accumBench();
+                    kernel1_timer.accumBench();
+                    // barrier_timer.startBench();
+                    // #pragma omp barrier
+                    // barrier_timer.accumBench();
                 }
-                #pragma omp barrier
             }
         }
-	    // if (tid == 0) {
-        //     packA_timer.printBench("t0 packA time", 1);
-        //     packB_timer.printBench("t0 packB time", 1);
-        //     kernel1_timer.printBench("t0 kernel1 time", 1);
-        //     kernel2_timer.printBench("t0 kernel2 time", 1);
-        // } else {
-        //     packA_timer.printBench("t1 packA time", 1);
-        //     packB_timer.printBench("t1 packB time", 1);
-        //     kernel1_timer.printBench("t1 kernel1 time", 1);
-        //     kernel2_timer.printBench("t1 kernel2 time", 1);
-        // }
-        // _mm_free(packB_memory_block);
+
+
+/*
         // compute_in_thread_timer.endBench("compute in thread");
+        if (tid == 36) {
+        // //    packA_timer.printBench("packA time", 1, tid);
+             packB_timer.printBench("packB time", 1, tid);
+             kernel1_timer.printBench("kernel1 time", 1, tid);
+             kernel2_timer.printBench("kernel2 time", 1, tid);
+        //     barrier_timer.printBench("barrier time", 1, tid);
+		// 	calculate_index_timer.printBench("calculate_index time", 1, tid);
+        }
+        if (tid == 46) {
+        // //    packA_timer.printBench("packA time", 1, tid);
+             packB_timer.printBench("packB time", 1, tid);
+             kernel1_timer.printBench("kernel1 time", 1, tid);
+             kernel2_timer.printBench("kernel2 time", 1, tid);
+        //     barrier_timer.printBench("barrier time", 1, tid);
+		// 	calculate_index_timer.printBench("calculate_index time", 1, tid);
+        }
+        if (tid == 0) {
+        // //    packA_timer.printBench("packA time", 1, tid);
+             packB_timer.printBench("packB time", 1, tid);
+             kernel1_timer.printBench("kernel1 time", 1, tid);
+             kernel2_timer.printBench("kernel2 time", 1, tid);
+        //     barrier_timer.printBench("barrier time", 1, tid);
+		// 	calculate_index_timer.printBench("calculate_index time", 1, tid);
+        }
+        if (tid == 12) {
+        // //    packA_timer.printBench("packA time", 1, tid);
+             packB_timer.printBench("packB time", 1, tid);
+             kernel1_timer.printBench("kernel1 time", 1, tid);
+             kernel2_timer.printBench("kernel2 time", 1, tid);
+        //     barrier_timer.printBench("barrier time", 1, tid);
+		// 	calculate_index_timer.printBench("calculate_index time", 1, tid);
+        }
+        if (tid == 24) {
+        // //    packA_timer.printBench("packA time", 1, tid);
+             packB_timer.printBench("packB time", 1, tid);
+             kernel1_timer.printBench("kernel1 time", 1, tid);
+             kernel2_timer.printBench("kernel2 time", 1, tid);
+        //     barrier_timer.printBench("barrier time", 1, tid);
+		// 	calculate_index_timer.printBench("calculate_index time", 1, tid);
+        }
+*/
+
+/*
+		if (tid == 46)
+			compute_in_thread_timer.endBench("compute in thread");
+*/
+        // other_timer.printBench("other time", 1, tid);
+        // _mm_free(packB_memory_block);
         // free(pg32);
 
     }
-	compute_timer.endBench("compute");
-	end_timer.startBench();
+	// fapp_stop("bar",1,0);
+	// compute_timer.endBench("compute");
+	// end_timer.startBench();
     // for (int i = 0; i < num_nodes; i++) {
     //     #pragma omp parallel forF
     //     for (int j = 0; j < M * N; j++) {
     //         C[j] += packC_memory_block[i*packC_memory_block_size_per_node + j];
     //     }
     // }
-	end_timer.endBench("end");
-    _mm_free(packB_memory_block);
-    _mm_free(packA_memory_block);
-    _mm_free(packC_memory_block);
+	// end_timer.endBench("end");
+    for (int i = 0; i < nc_parallel_ways; i++) {
+       	// _mm_free(packB_memory_block[i]);
+        // numa_free(packB_memory_block[i], align_ceil(sizeof(float) * size_B, 2097152));
+    }
+    // _mm_free(packA_memory_block);
+    // _mm_free(packC_memory_block);
     // free(pg32_true);
-        
+
 }
 
 void ConvIm2colLayer::GEMM_multithread_v1(float* A, float* B, float* C) {
@@ -3492,7 +3760,8 @@ void ConvIm2colLayer::GEMM_multithread_v1(float* A, float* B, float* C) {
                         }
                         // there are some remain numbers in column
                         if (remain_col_start < nc_adjust)
-                            inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch,
+                            inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                        1, ldc, row_batch, col_batch,
                                                         pg32_0, pg32_1, pg32_2, pg32_3);
                     }
 
@@ -3501,13 +3770,15 @@ void ConvIm2colLayer::GEMM_multithread_v1(float* A, float* B, float* C) {
                         float *packB_ptr = packB_copy;
                         float *packC_ptr = packC_copy + remain_row_start * ldc;
                         for (int j = 0; j < remain_col_start; j += col_batch) {
-                            inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch,
+                            inner_kernel_for_corner_fixn(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                        1, ldc, mc_adjust - remain_row_start, col_batch,
                                                         pg32_true, pg32_true, pg32_true, pg32_true);
                             packB_ptr += packB_step;
                             packC_ptr += col_batch;
                         }
                         if (remain_col_start < nc_adjust)
-                            inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, col_batch,
+                            inner_kernel_for_corner_nofix(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
+                                                        1, ldc, mc_adjust - remain_row_start, col_batch,
                                                         pg32_0, pg32_1, pg32_2, pg32_3);
                     }
                     kernel1_timer.accumBench();
@@ -3575,8 +3846,10 @@ void ConvIm2colLayer::set_pack_b_mt() {
     } else if (row_batch == 5 && col_batch == 64) {
         // this->pack_b_mt = pack_b_v2_5x64_multithread;
         this->pack_b_mt_2d = pack_b_v2_5x64_multithread_2d;
+        // this->pack_b_mt_2d = pack_b_v2_5x64_multithread_2d_v1;
     } else if (row_batch == 8 && col_batch == 48) {
         this->pack_b_mt_2d = pack_b_v2_8x48_multithread_2d;
+        // this->pack_b_mt_2d = pack_b_v2_8x48_multithread_2d_v1;
     }
     // if (row_batch == 8 && col_batch == 8) {
     //     switch (gemm_version) {
@@ -3669,22 +3942,345 @@ void ConvIm2colLayer::set_unpack_c() {
     // }
 }
 
+void kernel_8x48_pre_b(int kc_adjust, float *packA, float* packB, float *packC, int lda, const int ldc, float* next_b, const int ldb) {
+    float* packAPtr = packA;
+    float* packBPtr = packB;
+    float* packCPtr = packC;
+
+    float* packCPtr0  = packC;
+    float* packCPtr1  = packC + 1  * ldc;
+    float* packCPtr2  = packC + 2  * ldc;
+    float* packCPtr3  = packC + 3  * ldc;
+    float* packCPtr4  = packC + 4  * ldc;
+    float* packCPtr5  = packC + 5  * ldc;
+    float* packCPtr6  = packC + 6  * ldc;
+    float* packCPtr7  = packC + 7  * ldc;
+
+    asm volatile(
+        "ptrue  p0.s  \n"
+        "mov    x4, #16 \n"
+        "mov    x5, %[kc]    \n"
+
+       "lsl    x14, %[lda], #2 \n"
+
+		"mov    x18, 0x1   \n"
+        "lsl    x18, x18, 56      \n"
+        "orr    %[pC0], %[pC0], x18 \n"
+        "orr    %[pC1], %[pC1], x18 \n"
+        "orr    %[pC2], %[pC2], x18 \n"
+        "orr    %[pC3], %[pC3], x18 \n"
+        "orr    %[pC4], %[pC4], x18 \n"
+        "orr    %[pC5], %[pC5], x18 \n"
+        "orr    %[pC6], %[pC6], x18 \n"
+        "orr    %[pC7], %[pC7], x18 \n"
+
+        "mov    x6,  %[pA]   \n"
+		"add    x8,  %[pA], x14, lsl #1\n"
+		"add    x10, %[pA], x14, lsl #2\n"
+        "add    x12, x8,    x14, lsl #2\n"
+
+        "add    x7,  x6,    x14        \n"
+        "add    x9,  x8,    x14        \n"
+        "add    x11, x10,   x14        \n"
+        "add    x13, x12,   x14        \n"
+
+        "cmp x5, #0x2\n"
+
+        "prfm	pstl1keep, [%[pC0], 256] \n"
+		"prfm	pstl1keep, [%[pC1], 256] \n"
+		"prfm	pstl1keep, [%[pC2], 256] \n"
+		"prfm	pstl1keep, [%[pC3], 256] \n"
+		"prfm	pstl1keep, [%[pC4], 256] \n"
+		"prfm	pstl1keep, [%[pC5], 256] \n"
+		"prfm	pstl1keep, [%[pC6], 256] \n"
+		"prfm	pstl1keep, [%[pC7], 256] \n"
+        
+        "ld1w	{ z8.s },  p0/z, [%[pC0]]      \n"
+        "ld1w	{ z9.s },  p0/z, [%[pC0], #1, MUL VL]    \n"
+        "ld1w	{ z10.s }, p0/z, [%[pC0], #2, MUL VL]    \n"
+        "ld1w	{ z11.s }, p0/z, [%[pC1]]      \n"
+        "ld1w	{ z12.s }, p0/z, [%[pC1], #1, MUL VL]    \n"
+        "ld1w	{ z13.s }, p0/z, [%[pC1], #2, MUL VL]    \n"
+        "ld1w	{ z14.s }, p0/z, [%[pC2]]      \n"
+        "ld1w	{ z15.s }, p0/z, [%[pC2], #1, MUL VL]    \n"
+        "ld1w	{ z16.s }, p0/z, [%[pC2], #2, MUL VL]    \n"
+        "ld1w	{ z17.s }, p0/z, [%[pC3]]      \n"
+        "ld1w	{ z18.s }, p0/z, [%[pC3], #1, MUL VL]    \n"
+        "ld1w	{ z19.s }, p0/z, [%[pC3], #2, MUL VL]    \n"
+        "ld1w	{ z20.s }, p0/z, [%[pC4]]      \n"
+        "ld1w	{ z21.s }, p0/z, [%[pC4], #1, MUL VL]    \n"
+        "ld1w	{ z22.s }, p0/z, [%[pC4], #2, MUL VL]    \n"
+        "ld1w	{ z23.s }, p0/z, [%[pC5]]      \n"
+        "ld1w	{ z24.s }, p0/z, [%[pC5], #1, MUL VL]    \n"
+        "ld1w	{ z25.s }, p0/z, [%[pC5], #2, MUL VL]    \n"
+        "ld1w	{ z26.s }, p0/z, [%[pC6]]     \n"
+        "ld1w	{ z27.s }, p0/z, [%[pC6], #1, MUL VL]    \n"
+        "ld1w	{ z28.s }, p0/z, [%[pC6], #2, MUL VL]    \n"
+        "ld1w	{ z29.s }, p0/z, [%[pC7]]     \n"
+        "ld1w	{ z30.s }, p0/z, [%[pC7], #1, MUL VL]    \n"
+        "ld1w	{ z31.s }, p0/z, [%[pC7], #2, MUL VL]    \n"
+
+	    "ld1w	{ z0.s }, p0/z, [%[pB]]     \n"
+	    "ld1w	{ z1.s }, p0/z, [%[pB], #1, MUL VL]     \n"
+	    "ld1w	{ z2.s }, p0/z, [%[pB], #2, MUL VL]     \n"
+
+        "ld1rw	{ z3.s }, p0/z, [x6]                \n"
+	    "ld1rw	{ z4.s }, p0/z, [x7]                \n"
+	    "ld1rw	{ z5.s }, p0/z, [x8]                \n"
+	    "ld1rw	{ z6.s }, p0/z, [x9]                \n"
+        
+		"blt 4f\n"
+
+    "3:"  // main loop head
+        "fmla z8.s, p0/M, z0.s, z3.s\n"
+        "fmla z9.s, p0/M, z1.s, z3.s\n"
+        "sub  x5, x5, #0x2\n"
+        "fmla z10.s, p0/M, z2.s, z3.s\n"
+
+        "ld1rw { z3.s }, p0/Z, [x10]\n"
+        "prfm	pldl2keep, [%[next_b]]                \n"
+        "add    %[next_b], %[next_b], %[ldb]        \n"
+        // "prfm	pldl1keep, [%[pB], #256]                \n"
+        "fmla z11.s, p0/M, z0.s, z4.s\n"
+        "fmla z12.s, p0/M, z1.s, z4.s\n"
+        "fmla z13.s, p0/M, z2.s, z4.s\n"
+
+        "ld1rw { z4.s }, p0/Z, [x11]\n"
+        "fmla z14.s, p0/M, z0.s, z5.s\n"
+        "fmla z15.s, p0/M, z1.s, z5.s\n"
+        "fmla z16.s, p0/M, z2.s, z5.s\n"
+        "cmp x5, #0x2\n"
+
+        "ld1rw { z5.s }, p0/Z, [x12]\n"
+        "fmla z17.s, p0/M, z0.s, z6.s\n"
+        "fmla z18.s, p0/M, z1.s, z6.s\n"
+        "fmla z19.s, p0/M, z2.s, z6.s\n"
+
+        "ld1rw { z6.s }, p0/Z, [x13]\n"
+        "fmla z20.s, p0/M, z0.s, z3.s\n"
+        "fmla z21.s, p0/M, z1.s, z3.s\n"
+        "fmla z22.s, p0/M, z2.s, z3.s\n"
+
+        "ld1rw { z3.s }, p0/Z, [x6, #4]\n"
+        "add  x6, x6, #8 \n"
+        "fmla z23.s, p0/M, z0.s, z4.s\n"
+        "fmla z24.s, p0/M, z1.s, z4.s\n"
+        "fmla z25.s, p0/M, z2.s, z4.s\n"
+
+        "ld1rw { z4.s }, p0/Z, [x7, #4]\n"
+        "add  x7, x7, #8 \n"
+        // "prfm	pldl1keep, [%[pB], #256*2]                \n"
+        // "prfm	pldl1keep, [%[pA], #512]                \n"
+        "fmla z26.s, p0/M, z0.s, z5.s\n"
+        "fmla z27.s, p0/M, z1.s, z5.s\n"
+        "fmla z28.s, p0/M, z2.s, z5.s\n"
+
+        "ld1rw { z5.s }, p0/Z, [x8, #4]\n"
+        "add  x8, x8, #8 \n"
+        "fmla z29.s, p0/M, z0.s, z6.s\n"
+        "ld1w { z0.s }, p0/Z, [%[pB], #3, MUL VL]\n"
+        "fmla z30.s, p0/M, z1.s, z6.s\n"
+        "fmla z31.s, p0/M, z2.s, z6.s\n"
+
+        "ld1w { z1.s }, p0/Z, [%[pB], #4, MUL VL]\n"
+        "ld1w { z2.s }, p0/Z, [%[pB], #5, MUL VL]\n"
+        "fmla z8.s, p0/M, z0.s, z3.s\n"
+        "ld1rw { z6.s }, p0/Z, [x9, #4]\n"
+        "add  x9, x9, #8 \n"
+        "fmla z9.s, p0/M, z1.s, z3.s\n"
+        "fmla z10.s, p0/M, z2.s, z3.s\n"
+
+        "fmla z11.s, p0/M, z0.s, z4.s\n"
+        "ld1rw { z3.s }, p0/Z, [x10, #4]\n"
+        "add  x10, x10, #8 \n"
+        "fmla z12.s, p0/M, z1.s, z4.s\n"
+        "fmla z13.s, p0/M, z2.s, z4.s\n"
+
+        // "prfm	pldl1keep, [%[pA], #768]                \n"
+        "ld1rw { z4.s }, p0/Z, [x11, #4]\n"
+        "prfm	pldl2keep, [%[next_b]]                \n"
+        "add    %[next_b], %[next_b], %[ldb]        \n"
+        "add  x11, x11, #8 \n"
+        "fmla z14.s, p0/M, z0.s, z5.s\n"
+        "fmla z15.s, p0/M, z1.s, z5.s\n"
+        "add %[pB], %[pB], #384\n"
+        "fmla z16.s, p0/M, z2.s, z5.s\n"
+
+        "ld1rw { z5.s }, p0/Z, [x12, #4]\n"
+        "add  x12, x12, #8 \n"
+        "fmla z17.s, p0/M, z0.s, z6.s\n"
+        "fmla z18.s, p0/M, z1.s, z6.s\n"
+        "fmla z19.s, p0/M, z2.s, z6.s\n"
+
+        "ld1rw { z6.s }, p0/Z, [x13, #4]\n"
+        "add  x13, x13, #8 \n"
+        "fmla z20.s, p0/M, z0.s, z3.s\n"
+        "fmla z21.s, p0/M, z1.s, z3.s\n"
+        "fmla z22.s, p0/M, z2.s, z3.s\n"
+
+        "fmla z23.s, p0/M, z0.s, z4.s\n"
+        "ld1rw { z3.s }, p0/Z, [x6]\n"
+        "fmla z24.s, p0/M, z1.s, z4.s\n"
+        "fmla z25.s, p0/M, z2.s, z4.s\n"
+
+        "ld1rw { z4.s }, p0/Z, [x7]\n"
+        "fmla z26.s, p0/M, z0.s, z5.s\n"
+        "fmla z27.s, p0/M, z1.s, z5.s\n"
+        "fmla z28.s, p0/M, z2.s, z5.s\n"
+
+        "fmla z29.s, p0/M, z0.s, z6.s\n"
+        "ld1w { z0.s }, p0/Z, [%[pB]]\n"
+        "fmla z30.s, p0/M, z1.s, z6.s\n"
+        "fmla z31.s, p0/M, z2.s, z6.s\n"
+        
+        "ld1w { z1.s }, p0/Z, [%[pB], #1, MUL VL]\n"
+        "ld1w { z2.s }, p0/Z, [%[pB], #2, MUL VL]\n"
+        "ld1rw { z5.s }, p0/Z, [x8]\n"
+        "ld1rw { z6.s }, p0/Z, [x9]\n"
+        "bge 3b\n"
+        "cbz x5, 5f\n"
+
+        "4:"  // main loop skip
+        "fmla z8.s, p0/M, z0.s, z3.s\n"
+        "fmla z9.s, p0/M, z1.s, z3.s\n"
+        "add %[pB], %[pB], #192\n"
+        "fmla z10.s, p0/M, z2.s, z3.s\n"
+        "ld1rw { z3.s }, p0/Z, [x10]\n"
+        "fmla z11.s, p0/M, z0.s, z4.s\n"
+        "fmla z12.s, p0/M, z1.s, z4.s\n"
+        "fmla z13.s, p0/M, z2.s, z4.s\n"
+        "ld1rw { z4.s }, p0/Z, [x11]\n"
+        "fmla z14.s, p0/M, z0.s, z5.s\n"
+        "fmla z15.s, p0/M, z1.s, z5.s\n"
+        "fmla z16.s, p0/M, z2.s, z5.s\n"
+        "ld1rw { z5.s }, p0/Z, [x12]\n"
+        "fmla z17.s, p0/M, z0.s, z6.s\n"
+        "fmla z18.s, p0/M, z1.s, z6.s\n"
+        "fmla z19.s, p0/M, z2.s, z6.s\n"
+        "ld1rw { z6.s }, p0/Z, [x13]\n"
+        "fmla z20.s, p0/M, z0.s, z3.s\n"
+        "fmla z21.s, p0/M, z1.s, z3.s\n"
+        "fmla z22.s, p0/M, z2.s, z3.s\n"
+        "fmla z23.s, p0/M, z0.s, z4.s\n"
+        "fmla z24.s, p0/M, z1.s, z4.s\n"
+        "fmla z25.s, p0/M, z2.s, z4.s\n"
+        "fmla z26.s, p0/M, z0.s, z5.s\n"
+        "fmla z27.s, p0/M, z1.s, z5.s\n"
+        "fmla z28.s, p0/M, z2.s, z5.s\n"
+        "fmla z29.s, p0/M, z0.s, z6.s\n"
+        "fmla z30.s, p0/M, z1.s, z6.s\n"
+        "fmla z31.s, p0/M, z2.s, z6.s\n"
+        // "cbz x5, 5f\n"
+        // "ld1w { z0.s }, p0/Z, [%[pB]]\n"
+        // "ld1w { z1.s }, p0/Z, [%[pB], #1, MUL VL]\n"
+        // "ld1w { z2.s }, p0/Z, [%[pB], #2, MUL VL]\n"
+        // "ld1rw { z3.s }, p0/Z, [%x[pA]]\n"
+        // "fmla z8.s, p0/M, z0.s, z3.s\n"
+        // "ld1rw { z4.s }, p0/Z, [%x[pA], #4]\n"
+        // "ld1rw { z5.s }, p0/Z, [%x[pA], #8]\n"
+        // "fmla z9.s, p0/M, z1.s, z3.s\n"
+        // "ld1rw { z6.s }, p0/Z, [%x[pA], #12]\n"
+        // "fmla z10.s, p0/M, z2.s, z3.s\n"
+        // "fmla z11.s, p0/M, z0.s, z4.s\n"
+        // "ld1rw { z3.s }, p0/Z, [%x[pA], #16]\n"
+        // "fmla z12.s, p0/M, z1.s, z4.s\n"
+        // "fmla z13.s, p0/M, z2.s, z4.s\n"
+        // "ld1rw { z4.s }, p0/Z, [%x[pA], #20]\n"
+        // "fmla z14.s, p0/M, z0.s, z5.s\n"
+        // "fmla z15.s, p0/M, z1.s, z5.s\n"
+        // "fmla z16.s, p0/M, z2.s, z5.s\n"
+        // "fmla z17.s, p0/M, z0.s, z6.s\n"
+        // "ld1rw { z5.s }, p0/Z, [%x[pA], #24]\n"
+        // "fmla z18.s, p0/M, z1.s, z6.s\n"
+        // "fmla z19.s, p0/M, z2.s, z6.s\n"
+        // "ld1rw { z6.s }, p0/Z, [%x[pA], #28]\n"
+        // "add %[pB], %[pB], #192\n"
+        // "fmla z20.s, p0/M, z0.s, z3.s\n"
+        // "fmla z21.s, p0/M, z1.s, z3.s\n"
+        // "add %x[pA], %x[pA], #0x20\n"
+        // "fmla z22.s, p0/M, z2.s, z3.s\n"
+        // "fmla z23.s, p0/M, z0.s, z4.s\n"
+        // "fmla z24.s, p0/M, z1.s, z4.s\n"
+        // "fmla z25.s, p0/M, z2.s, z4.s\n"
+        // "fmla z26.s, p0/M, z0.s, z5.s\n"
+        // "fmla z27.s, p0/M, z1.s, z5.s\n"
+        // "fmla z28.s, p0/M, z2.s, z5.s\n"
+        // "fmla z29.s, p0/M, z0.s, z6.s\n"
+        // "fmla z30.s, p0/M, z1.s, z6.s\n"
+        // "fmla z31.s, p0/M, z2.s, z6.s\n"
+
+        "5:"  // multiply loop done
+
+        "st1w	{ z8.s },  p0, [%[pC0]]      \n"
+        "st1w	{ z9.s },  p0, [%[pC0], #1, MUL VL]    \n"
+        "st1w	{ z10.s }, p0, [%[pC0], #2, MUL VL]    \n"
+        "st1w	{ z11.s }, p0, [%[pC1]]      \n"
+        "st1w	{ z12.s }, p0, [%[pC1], #1, MUL VL]    \n"
+        "st1w	{ z13.s }, p0, [%[pC1], #2, MUL VL]    \n"
+        "st1w	{ z14.s }, p0, [%[pC2]]      \n"
+        "st1w	{ z15.s }, p0, [%[pC2], #1, MUL VL]    \n"
+        "st1w	{ z16.s }, p0, [%[pC2], #2, MUL VL]    \n"
+        "st1w	{ z17.s }, p0, [%[pC3]]      \n"
+        "st1w	{ z18.s }, p0, [%[pC3], #1, MUL VL]    \n"
+        "st1w	{ z19.s }, p0, [%[pC3], #2, MUL VL]    \n"
+        "st1w	{ z20.s }, p0, [%[pC4]]      \n"
+        "st1w	{ z21.s }, p0, [%[pC4], #1, MUL VL]    \n"
+        "st1w	{ z22.s }, p0, [%[pC4], #2, MUL VL]    \n"
+        "st1w	{ z23.s }, p0, [%[pC5]]      \n"
+        "st1w	{ z24.s }, p0, [%[pC5], #1, MUL VL]    \n"
+        "st1w	{ z25.s }, p0, [%[pC5], #2, MUL VL]    \n"
+        "st1w	{ z26.s }, p0, [%[pC6]]     \n"
+        "st1w	{ z27.s }, p0, [%[pC6], #1, MUL VL]    \n"
+        "st1w	{ z28.s }, p0, [%[pC6], #2, MUL VL]    \n"
+        "st1w	{ z29.s }, p0, [%[pC7]]     \n"
+        "st1w	{ z30.s }, p0, [%[pC7], #1, MUL VL]    \n"
+        "st1w	{ z31.s }, p0, [%[pC7], #2, MUL VL]    \n"
+
+
+    : [pA]"=&r"(packAPtr),     // %0
+      [pB]"=&r"(packBPtr)      // %1
+    : "[pA]"   (packAPtr),
+      "[pB]"   (packBPtr), 
+      [pC0] "r"(packCPtr0),    // %2
+      [pC1] "r"(packCPtr1),    // %2
+      [pC2] "r"(packCPtr2),    // %3
+      [pC3] "r"(packCPtr3),    // %3
+      [pC4] "r"(packCPtr4),    // %4
+      [pC5] "r"(packCPtr5),    // %4
+      [pC6] "r"(packCPtr6),    // %5
+      [pC7] "r"(packCPtr7),    // %5
+      [lda] "r"(lda),
+      [ldb] "r"(ldb),
+      [ldc] "r"(ldc),
+      [kc]  "r"(kc_adjust),
+      [next_b]"r"(next_b)
+    : "memory", "cc", "p0", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
+      "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+      "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+      "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+}
+
 void ConvIm2colLayer::set_inner_kernel() {
     if (row_batch == 12 && col_batch == 32) {
-        // this->inner_kernel = kernel_12x32_v1;
-        this->inner_kernel = kernel_12x32_v2;
-        // this->inner_kernel = kernel_12x32_no_packa;
-    } else if (row_batch == 8 && col_batch == 32) {
-        this->inner_kernel = kernel_8x32;
-    } else if (row_batch == 14 && col_batch == 32) {
-        this->inner_kernel = kernel_14x32;
-    } else if (row_batch == 4 && col_batch == 64) {
-        this->inner_kernel = kernel_4x64;
+        if (this->pack_a_version == 0)
+            this->inner_kernel = kernel_12x32_no_packa;
+        else if (this->pack_a_version == 1)
+            this->inner_kernel = kernel_12x32_v2;
     } else if (row_batch == 8 && col_batch == 48) {
-        this->inner_kernel = kernel_8x48;
+        if (this->pack_a_version == 0) {
+            this->inner_kernel = kernel_8x48_no_packa;
+            // this->inner_kernel = kernel_8x48_no_packa_packb;
+            // this->inner_kernel = kernel_8x48_no_packa_v1;
+            // this->inner_kernel_pre_b = kernel_8x48_pre_b;
+        }
+        else if (this->pack_a_version == 1)
+            this->inner_kernel = kernel_8x48;
     } else if (row_batch == 5 && col_batch == 64) {
-        this->inner_kernel = kernel_5x64_no_packa;
-        // this->inner_kernel = kernel_5x64_no_packa_v1;
+        if (this->pack_a_version == 0)
+            this->inner_kernel = kernel_5x64_no_packa;
+            // this->inner_kernel = kernel_5x64_no_packa_v1;
+        else if (this->pack_a_version == 1)
+            this->inner_kernel = kernel_5x64;
     }
     // if (row_batch == 8 && col_batch == 8) {
     //     if (pack_c_version == 0 || pack_c_version == 1)

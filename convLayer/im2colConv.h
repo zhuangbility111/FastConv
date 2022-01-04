@@ -31,7 +31,7 @@ public:
                     size_t pad_left=1, size_t pad_right=1, size_t pad_top=1, size_t pad_bottom=1,
                     size_t g=1, bool bias=0, size_t nt=1, size_t iter=10,
                     int mc=8, int nc=256, int kc=384, int gemm_version=1, int row_batch=8, int col_batch=32,
-                    int pack_c_version=0, int mt_pack_b_version=2, int prefetch_a=256, int prefetch_b=256, int prefetch_c=0);
+                    int pack_a_version=0, int mt_pack_b_version=2, int prefetch_a=256, int prefetch_b=256, int prefetch_c=0);
         
     ~ConvIm2colLayer();
         
@@ -60,6 +60,7 @@ public:
     void GEMM_multithread_v4_MKN_2d_no_packa(float* A, float* B, float* C);
     void GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float* B, float* C);
     void GEMM_multithread_v6_MKN_2d_outer(float* A, float* B, float* C);
+    void GEMM_multithread_v7_MKN_2d_outer_nested_no_packa(float* A, float* B, float* C);
 
 protected:
     typedef void (*PackA)(int, int, float *, int, float *, int, int, int, const int, const int);
@@ -70,8 +71,9 @@ protected:
     typedef void (*PackC)(int, int, int, float*, float*, int, const int, const int);
     typedef void (*UnpackC)(int, int, int, float*, float*, int, const int, const int);
     typedef void (*InnerKernel)(int, float *, float *, float *, int, const int, const int, const int);
+    typedef void (*InnerKernelPreB)(int, float *, float *, float *, int, const int, float*, const int);
     typedef void (*InnerKernelForCorner)(int, float *, float *, float *, int);
-    typedef void (*inner_kernel_for_corner_func_t)(int, float *, float *, float *, int, int, int, svbool_t, svbool_t, svbool_t, svbool_t);
+    typedef void (*inner_kernel_for_corner_func_t)(int, float *, float *, float *, int, int, int, int, svbool_t, svbool_t, svbool_t, svbool_t);
 
     PackA pack_a;
     PackAMT pack_a_mt;
@@ -81,6 +83,7 @@ protected:
     PackC pack_c;
     UnpackC unpack_c;
     InnerKernel inner_kernel;
+    InnerKernelPreB inner_kernel_pre_b;
     InnerKernelForCorner inner_kernel_for_corner;
 
     int M;
@@ -96,6 +99,7 @@ protected:
     int nr_parallel_ways = 1;
     int row_batch;
     int col_batch;
+    int pack_a_version;
     int pack_c_version;
     int mt_pack_b_version;
     int prefetch_a;
@@ -111,7 +115,7 @@ protected:
     static const int GEMM_BLOCKS_MULTI_THREADS = 2;
     static const int GEMM_BLOCKS_MULTI_THREADS_2D = 3;
 
-    void set_parallelism_ways();
+    void set_parallelism_ways(int, int, int, int, int);
 
     void set_pack_a();
     void set_pack_a_mt();
@@ -128,8 +132,8 @@ protected:
     void select_tuning_range_for_prefetch(int&, int&, int&, int&, int&, int&, int&, int&, int&);
 
     bool search_log_file_and_entry(const char *log_path);
-    void search_best_param(int &best_mc, int &best_nc, int &best_kc, int &best_rb, int &best_cb, int &best_pc, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c);
-    void write_best_param(const char *log_path, int &best_mc, int &best_nc, int &best_kc, int &best_rb, int &best_cb, int &best_pc, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c);
+    void search_best_param(int &best_mc, int &best_nc, int &best_kc, int &best_rb, int &best_cb, int &best_pc, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c, int &mc_pw, int &nc_pw);
+    void write_best_param(const char *log_path, int &best_mc, int &best_nc, int &best_kc, int &best_rb, int &best_cb, int &best_pc, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c, int &mc_pw, int &nc_pw);
 };
 
 #endif 
