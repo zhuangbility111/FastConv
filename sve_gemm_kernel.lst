@@ -1,0 +1,2360 @@
+Fujitsu C/C++ Version 4.6.1   Tue Oct 12 15:41:07 2021
+Compilation information
+  Current directory : /vol0004/ra000012/a04453/FastConv
+  Source file       : ./im2col/SVE/sve_gemm_kernel.cpp
+(line-no.)(optimize)
+        1             #include <stdlib.h>
+        2             #include <assert.h>
+        3             #include <stdio.h>
+        4             #include "../../utility/helper.h"
+        5             
+        6             #include <arm_sve.h>
+        7             
+        8             #define _ASM_
+        9             
+       10             typedef void (*InnerKernel)(int, float *, float *, float *, int, const int, const int, const int);
+       11             typedef void (*InnerKernelForCorner)(int, float *, float *, float *, int);
+       12             
+       13             // old version, use indexed fmla and loop unroll by 4
+       14             void kernel_8x32(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
+       15             
+       16                 float* packAPtr = packA;
+       17                 float* packBPtr = packB;
+       18                 float* packCPtr = packC;
+       19             
+       20             #ifdef _ASM_
+       21             
+       22                 float* packCPtr0  = packC;
+       23                 float* packCPtr1  = packC + 1  * ldc;
+       24                 float* packCPtr2  = packC + 2  * ldc;
+       25                 float* packCPtr3  = packC + 3  * ldc;
+       26                 float* packCPtr4  = packC + 4  * ldc;
+       27                 float* packCPtr5  = packC + 5  * ldc;
+       28                 float* packCPtr6  = packC + 6  * ldc;
+       29                 float* packCPtr7  = packC + 7  * ldc;
+       30             
+       31             //        "prfm	pldl1keep, [%[pA], #128]                \n"
+       32             //        "prfm	pldl1keep, [%[pB], #128]                \n"
+       33             //        "prfm	pldl1keep, [%[pA]]                      \n"
+       34                     // "prfm	pldl1keep, [%[pA], #128]                 \n"
+       35             
+       36             //     asm volatile(
+       37             //         "ptrue  p0.s  \n"
+       38             //         "mov    x4, #16 \n"
+       39             //         "mov    x5, %[kc]    \n"
+       40             //         "lsr    x6, x5, 0x2  \n"
+       41             
+       42             //         "cmp    w5, #0  \n"
+       43             //         "b.eq   1f     \n"
+       44             
+       45             //         "ld1w	{ z16.s }, p0/z, [%[pC0]]      \n"  // load C
+       46             //         "ld1w	{ z17.s }, p0/z, [%[pC0], x4, lsl #2]    \n"
+       47             //         "ld1w	{ z18.s }, p0/z, [%[pC1]]      \n"
+       48             //         "ld1w	{ z19.s }, p0/z, [%[pC1], x4, lsl #2]    \n"
+       49             //         "ld1w	{ z20.s }, p0/z, [%[pC2]]      \n"
+       50             //         "ld1w	{ z21.s }, p0/z, [%[pC2], x4, lsl #2]    \n"
+       51             //         "ld1w	{ z22.s }, p0/z, [%[pC3]]      \n"
+       52             //         "ld1w	{ z23.s }, p0/z, [%[pC3], x4, lsl #2]    \n"
+       53             //         "ld1w	{ z24.s }, p0/z, [%[pC4]]      \n"
+       54             //         "ld1w	{ z25.s }, p0/z, [%[pC4], x4, lsl #2]    \n"
+       55             //         "ld1w	{ z26.s }, p0/z, [%[pC5]]      \n"
+       56             //         "ld1w	{ z27.s }, p0/z, [%[pC5], x4, lsl #2]    \n"
+       57             //         "ld1w	{ z28.s }, p0/z, [%[pC6]]      \n"
+       58             //         "ld1w	{ z29.s }, p0/z, [%[pC6], x4, lsl #2]    \n"
+       59             //         "ld1w	{ z30.s }, p0/z, [%[pC7]]      \n"
+       60             //         "ld1w	{ z31.s }, p0/z, [%[pC7], x4, lsl #2]    \n"
+       61                     
+       62             //         "ld1rqw	{ z0.s }, p0/z, [%[pA]]                 \n"
+       63             // 	    "ld1rqw	{ z1.s }, p0/z, [%[pA], #16]            \n"
+       64             //         "ld1rqw	{ z2.s }, p0/z, [%[pA], #32]            \n"
+       65             // 	    "ld1rqw	{ z3.s }, p0/z, [%[pA], #48]            \n"
+       66             //         "ld1rqw	{ z4.s }, p0/z, [%[pA], #64]            \n"
+       67             // 	    "ld1rqw	{ z5.s }, p0/z, [%[pA], #80]            \n"
+       68             
+       69             //         "ld1w	{ z8.s },  p0/z, [%[pB]]                \n"
+       70             // 	    "ld1w	{ z9.s },  p0/z, [%[pB], #1, MUL VL]    \n"
+       71             //         "ld1w	{ z10.s }, p0/z, [%[pB], #2, MUL VL]    \n"
+       72             // 	    "ld1w	{ z11.s }, p0/z, [%[pB], #3, MUL VL]    \n"
+       73             //         "ld1w	{ z12.s }, p0/z, [%[pB], #4, MUL VL]    \n"
+       74             // 	    "ld1w	{ z13.s }, p0/z, [%[pB], #5, MUL VL]    \n"
+       75             
+       76             //         "add	%[pA], %[pA], #96                       \n"
+       77             //         "add	%[pB], %[pB], #384                      \n" 
+       78             
+       79             //     "0:                                                 \n"
+       80             	    
+       81             // 	    "ld1rqw	{ z6.s },  p0/z, [%[pA]]               \n"
+       82             // 	    "ld1rqw	{ z7.s },  p0/z, [%[pA], #16]          \n"
+       83             // //        "prfm	pldl1keep, [%[pA], #128]                \n"
+       84             //         "ld1w	{ z14.s }, p0/z, [%[pB]]               \n"
+       85             // //	    "ld1w	{ z15.s }, p0/z, [%[pB], x4, lsl #2]   \n"
+       86             // 	    "ld1w	{ z15.s }, p0/z, [%[pB], #1, MUL VL]   \n"
+       87             //         "add	%[pA], %[pA], #32                       \n"
+       88             //         "add	%[pB], %[pB], #128                      \n"
+       89             
+       90             //         // loop1
+       91             //         "fmla	z16.s, z8.s, z0.s[0]                    \n"
+       92             //         "fmla	z18.s, z8.s, z0.s[1]                    \n"
+       93             //         "fmla	z20.s, z8.s, z0.s[2]                    \n"
+       94             //         "fmla	z22.s, z8.s, z0.s[3]                    \n"
+       95             
+       96             //         "fmla	z17.s, z9.s, z0.s[0]                    \n"
+       97             //         "fmla	z19.s, z9.s, z0.s[1]                    \n"
+       98             //         "fmla	z21.s, z9.s, z0.s[2]                   \n"
+       99             //         "fmla	z23.s, z9.s, z0.s[3]                    \n"
+      100             
+      101             //         "fmla	z24.s, z8.s, z1.s[0]                    \n"
+      102             //         "fmla	z26.s, z8.s, z1.s[1]                    \n"
+      103             //         "fmla	z28.s, z8.s, z1.s[2]                    \n"
+      104             //         "fmla	z30.s, z8.s, z1.s[3]                    \n"
+      105             
+      106             //         "fmla	z25.s, z9.s, z1.s[0]                    \n"
+      107             //         "fmla	z27.s, z9.s, z1.s[1]                    \n"
+      108             //         "fmla	z29.s, z9.s, z1.s[2]                    \n"
+      109             //         "fmla	z31.s, z9.s, z1.s[3]                    \n"
+      110             
+      111             // 	    "ld1rqw	{ z0.s }, p0/z, [%[pA]]                 \n"
+      112             // 	    "ld1rqw	{ z1.s }, p0/z, [%[pA], #16]            \n"
+      113             // //        "prfm	pldl1keep, [%[pA], #128]                \n"
+      114             //         "ld1w	{ z8.s }, p0/z, [%[pB]]                 \n"
+      115             // //	    "ld1w	{ z9.s }, p0/z, [%[pB], x4, lsl #2]     \n"
+      116             // 	    "ld1w	{ z9.s }, p0/z, [%[pB], #1, MUL VL]     \n"
+      117             //         "add	%[pA], %[pA], #32                       \n"
+      118             //         "add	%[pB], %[pB], #128                      \n"
+      119             
+      120             //         // loop2 
+      121             
+      122             //         "fmla	z16.s, z10.s, z2.s[0]                    \n"
+      123             //         "fmla	z18.s, z10.s, z2.s[1]                    \n"
+      124             //         "fmla	z20.s, z10.s, z2.s[2]                    \n"
+      125             //         "fmla	z22.s, z10.s, z2.s[3]                    \n"
+      126             
+      127             //         "fmla	z17.s, z11.s, z2.s[0]                    \n"
+      128             //         "fmla	z19.s, z11.s, z2.s[1]                    \n"
+      129             //         "fmla	z21.s, z11.s, z2.s[2]                    \n"
+      130             //         "fmla	z23.s, z11.s, z2.s[3]                    \n"
+      131             
+      132             //         "fmla	z24.s, z10.s, z3.s[0]                    \n"
+      133             //         "fmla	z26.s, z10.s, z3.s[1]                    \n"
+      134             //         "fmla	z28.s, z10.s, z3.s[2]                    \n"
+      135             //         "fmla	z30.s, z10.s, z3.s[3]                    \n"
+      136             
+      137             //         "fmla	z25.s, z11.s, z3.s[0]                    \n"
+      138             //         "fmla	z27.s, z11.s, z3.s[1]                    \n"
+      139             //         "fmla	z29.s, z11.s, z3.s[2]                    \n"
+      140             //         "fmla	z31.s, z11.s, z3.s[3]                    \n"
+      141             
+      142             // 	    "ld1rqw	{ z2.s }, p0/z, [%[pA]]                 \n"
+      143             // 	    "ld1rqw	{ z3.s }, p0/z, [%[pA], #16]            \n"
+      144             // //        "prfm	pldl1keep, [%[pA], #128]                \n"
+      145             //         "ld1w	{ z10.s }, p0/z, [%[pB]]                 \n"
+      146             // //	    "ld1w	{ z11.s }, p0/z, [%[pB], x4, lsl #2]     \n"
+      147             // 	    "ld1w	{ z11.s }, p0/z, [%[pB], #1, MUL VL]     \n"
+      148             //         "add	%[pA], %[pA], #32                       \n"
+      149             //         "add	%[pB], %[pB], #128                      \n"
+      150             
+      151             //         // loop3
+      152             
+      153             //         "fmla	z16.s, z12.s, z4.s[0]                    \n"
+      154             //         "fmla	z18.s, z12.s, z4.s[1]                    \n"
+      155             //         "fmla	z20.s, z12.s, z4.s[2]                    \n"
+      156             //         "fmla	z22.s, z12.s, z4.s[3]                    \n"
+      157             
+      158             //         "fmla	z17.s, z13.s, z4.s[0]                    \n"
+      159             //         "fmla	z19.s, z13.s, z4.s[1]                    \n"
+      160             //         "fmla	z21.s, z13.s, z4.s[2]                    \n"
+      161             //         "fmla	z23.s, z13.s, z4.s[3]                    \n"
+      162             
+      163             //         "fmla	z24.s, z12.s, z5.s[0]                    \n"
+      164             //         "fmla	z26.s, z12.s, z5.s[1]                    \n"
+      165             //         "fmla	z28.s, z12.s, z5.s[2]                    \n"
+      166             //         "fmla	z30.s, z12.s, z5.s[3]                    \n"
+      167             
+      168             //         "fmla	z25.s, z13.s, z5.s[0]                    \n"
+      169             //         "fmla	z27.s, z13.s, z5.s[1]                    \n"
+      170             //         "fmla	z29.s, z13.s, z5.s[2]                    \n"
+      171             //         "fmla	z31.s, z13.s, z5.s[3]                    \n"
+      172             
+      173             // 	    "ld1rqw	{ z4.s },  p0/z, [%[pA]]                 \n"
+      174             // 	    "ld1rqw	{ z5.s },  p0/z, [%[pA], #16]            \n"
+      175             // //        "prfm	pldl1keep, [%[pA], #128]                \n"
+      176             //         "ld1w	{ z12.s }, p0/z, [%[pB]]                 \n"
+      177             // //	    "ld1w	{ z13.s }, p0/z, [%[pB], x4, lsl #2]     \n"
+      178             // 	    "ld1w	{ z13.s }, p0/z, [%[pB], #1, MUL VL]     \n"
+      179             //         "add	%[pA], %[pA], #32                        \n"
+      180             //         "add	%[pB], %[pB], #128                       \n"
+      181             
+      182             //         // loop4
+      183             
+      184             //         "fmla	z16.s, z14.s, z6.s[0]                    \n"
+      185             //         "fmla	z18.s, z14.s, z6.s[1]                    \n"
+      186             //         "fmla	z20.s, z14.s, z6.s[2]                    \n"
+      187             //         "fmla	z22.s, z14.s, z6.s[3]                    \n"
+      188             
+      189             //         "fmla	z17.s, z15.s, z6.s[0]                    \n"
+      190             //         "fmla	z19.s, z15.s, z6.s[1]                    \n"
+      191             //         "fmla	z21.s, z15.s, z6.s[2]                    \n"
+      192             //         "fmla	z23.s, z15.s, z6.s[3]                    \n"
+      193             
+      194             //         "fmla	z24.s, z14.s, z7.s[0]                    \n"
+      195             //         "fmla	z26.s, z14.s, z7.s[1]                    \n"
+      196             //         "fmla	z28.s, z14.s, z7.s[2]                    \n"
+      197             //         "fmla	z30.s, z14.s, z7.s[3]                    \n"
+      198             
+      199             //         "fmla	z25.s, z15.s, z7.s[0]                    \n"
+      200             //         "fmla	z27.s, z15.s, z7.s[1]                    \n"
+      201             //         "fmla	z29.s, z15.s, z7.s[2]                    \n"
+      202             //         "fmla	z31.s, z15.s, z7.s[3]                    \n"
+      203             
+      204             
+      205             //         "subs   x6, x6, 0x1                              \n"
+      206             
+      207             //         "b.ne   0b                                      \n"
+      208                     
+      209             //         "st1w	{ z16.s }, p0, [%[pC0]]      \n"  // store C
+      210             //         "st1w	{ z17.s }, p0, [%[pC0], x4, lsl #2]    \n"
+      211             //         "st1w	{ z18.s }, p0, [%[pC1]]      \n"
+      212             //         "st1w	{ z19.s }, p0, [%[pC1], x4, lsl #2]    \n"
+      213             //         "st1w	{ z20.s }, p0, [%[pC2]]      \n"
+      214             //         "st1w	{ z21.s }, p0, [%[pC2], x4, lsl #2]    \n"
+      215             //         "st1w	{ z22.s }, p0, [%[pC3]]      \n"
+      216             //         "st1w	{ z23.s }, p0, [%[pC3], x4, lsl #2]    \n"
+      217             //         "st1w	{ z24.s }, p0, [%[pC4]]      \n"
+      218             //         "st1w	{ z25.s }, p0, [%[pC4], x4, lsl #2]    \n"
+      219             //         "st1w	{ z26.s }, p0, [%[pC5]]      \n"
+      220             //         "st1w	{ z27.s }, p0, [%[pC5], x4, lsl #2]    \n"
+      221             //         "st1w	{ z28.s }, p0, [%[pC6]]      \n"
+      222             //         "st1w	{ z29.s }, p0, [%[pC6], x4, lsl #2]    \n"
+      223             //         "st1w	{ z30.s }, p0, [%[pC7]]      \n"
+      224             //         "st1w	{ z31.s }, p0, [%[pC7], x4, lsl #2]    \n"
+      225             
+      226             //     "1:                                                 \n"
+      227                     
+      228             //     : [pA]"=&r"(packAPtr),     // %0
+      229             //       [pB]"=&r"(packBPtr)      // %1
+      230             //     : "[pA]"   (packAPtr),
+      231             //       "[pB]"   (packBPtr), 
+      232             //       [pC0] "r"(packCPtr0),    // %2
+      233             //       [pC1] "r"(packCPtr1),    // %2
+      234             //       [pC2] "r"(packCPtr2),    // %3
+      235             //       [pC3] "r"(packCPtr3),    // %3
+      236             //       [pC4] "r"(packCPtr4),    // %4
+      237             //       [pC5] "r"(packCPtr5),    // %4
+      238             //       [pC6] "r"(packCPtr6),    // %5
+      239             //       [pC7] "r"(packCPtr7),    // %5
+      240             //       [ldc] "r"(ldc),
+      241             //       [kc]  "r"(kc_adjust),
+      242             //       [preA]"r"(PREFETCH_A),
+      243             //       [preB]"r"(PREFETCH_B),
+      244             //       [preC]"r"(PREFETCH_C)
+      245             //     : "memory", "cc", 
+      246             //       "p0", "x4", "x5", "x6", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+      247             //       "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+      248             //       "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+      249             
+      250                 const svbool_t p32_all = svptrue_b32();
+      251             
+      252                 svfloat32_t va0,   va1, va2, va3, va4, va5, va6, va7;
+      253                 svfloat32_t vb0,   vb1;
+      254                 svfloat32_t vc00,  vc01;
+      255                 svfloat32_t vc10,  vc11;
+      256                 svfloat32_t vc20,  vc21;
+      257                 svfloat32_t vc30,  vc31;
+      258                 svfloat32_t vc40,  vc41;
+      259                 svfloat32_t vc50,  vc51;
+      260                 svfloat32_t vc60,  vc61;
+      261                 svfloat32_t vc70,  vc71;
+      262             
+      263                 vc00  = svld1_f32(p32_all, packCPtr0);
+      264                 vc01  = svld1_f32(p32_all, packCPtr0 + 16);
+      265                 vc10  = svld1_f32(p32_all, packCPtr1);
+      266                 vc11  = svld1_f32(p32_all, packCPtr1 + 16);
+      267                 vc20  = svld1_f32(p32_all, packCPtr2);
+      268                 vc21  = svld1_f32(p32_all, packCPtr2 + 16);
+      269                 vc30  = svld1_f32(p32_all, packCPtr3);
+      270                 vc31  = svld1_f32(p32_all, packCPtr3 + 16);
+      271                 vc40  = svld1_f32(p32_all, packCPtr4);
+      272                 vc41  = svld1_f32(p32_all, packCPtr4 + 16);
+      273                 vc50  = svld1_f32(p32_all, packCPtr5);
+      274                 vc51  = svld1_f32(p32_all, packCPtr5 + 16);
+      275                 vc60  = svld1_f32(p32_all, packCPtr6);
+      276                 vc61  = svld1_f32(p32_all, packCPtr6 + 16);
+      277                 vc70  = svld1_f32(p32_all, packCPtr7);
+      278                 vc71  = svld1_f32(p32_all, packCPtr7 + 16);
+      279             
+      280                 // 计算
+      281                 #pragma statement scache_isolate_way L1=3
+      282                 #pragma statement scache_isolate_assign packA_ptr packB_ptr
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    SOFTWARE PIPELINING(IPC: 2.05, ITR: 3, MVE: 2, POL: S)
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+      283                 for (int k = 0; k < kc_adjust; k++) {
+      284                     va0 = svdup_n_f32(packAPtr[0]);
+      285                     va1 = svdup_n_f32(packAPtr[1]);
+      286                     va2 = svdup_n_f32(packAPtr[2]);
+      287                     va3 = svdup_n_f32(packAPtr[3]);
+      288                     va4 = svdup_n_f32(packAPtr[4]);
+      289                     va5 = svdup_n_f32(packAPtr[5]);
+      290                     va6 = svdup_n_f32(packAPtr[6]);
+      291                     va7 = svdup_n_f32(packAPtr[7]);
+      292             
+      293                     vb0 = svld1_f32(p32_all, packBPtr);
+      294                     vb1 = svld1_f32(p32_all, packBPtr + 16);
+      295                     
+      296                     vc00 = svmla_f32_x(p32_all, vc00, va0, vb0);
+      297                     vc01 = svmla_f32_x(p32_all, vc01, va0, vb1);
+      298             
+      299                     vc10 = svmla_f32_x(p32_all, vc10, va1, vb0);
+      300                     vc11 = svmla_f32_x(p32_all, vc11, va1, vb1);
+      301             
+      302                     vc20 = svmla_f32_x(p32_all, vc20, va2, vb0);
+      303                     vc21 = svmla_f32_x(p32_all, vc21, va2, vb1);
+      304             
+      305                     vc30 = svmla_f32_x(p32_all, vc30, va3, vb0);
+      306                     vc31 = svmla_f32_x(p32_all, vc31, va3, vb1);
+      307             
+      308                     vc40 = svmla_f32_x(p32_all, vc40, va4, vb0);
+      309                     vc41 = svmla_f32_x(p32_all, vc41, va4, vb1);
+      310             
+      311                     vc50 = svmla_f32_x(p32_all, vc50, va5, vb0);
+      312                     vc51 = svmla_f32_x(p32_all, vc51, va5, vb1);
+      313             
+      314                     vc60 = svmla_f32_x(p32_all, vc60, va6, vb0);
+      315                     vc61 = svmla_f32_x(p32_all, vc61, va6, vb1);
+      316             
+      317                     vc70 = svmla_f32_x(p32_all, vc70, va7, vb0);
+      318                     vc71 = svmla_f32_x(p32_all, vc71, va7, vb1);
+      319             
+      320                     packAPtr += 8;
+      321                     packBPtr += 32;
+      322                 }
+      323             	#pragma statement end_scache_isolate_assign
+      324             	#pragma statement end_scache_isolate_way       
+      325             
+      326                 // 将结果写回
+      327                 svst1_f32(p32_all, packCPtr0, vc00);
+      328                 svst1_f32(p32_all, packCPtr0 + 16, vc01);
+      329                 svst1_f32(p32_all, packCPtr1, vc10);
+      330                 svst1_f32(p32_all, packCPtr1 + 16, vc11);
+      331                 svst1_f32(p32_all, packCPtr2, vc20);
+      332                 svst1_f32(p32_all, packCPtr2 + 16, vc21);
+      333                 svst1_f32(p32_all, packCPtr3, vc30);
+      334                 svst1_f32(p32_all, packCPtr3 + 16, vc31);
+      335                 svst1_f32(p32_all, packCPtr4, vc40);
+      336                 svst1_f32(p32_all, packCPtr4 + 16, vc41);
+      337                 svst1_f32(p32_all, packCPtr5, vc50);
+      338                 svst1_f32(p32_all, packCPtr5 + 16, vc51);
+      339                 svst1_f32(p32_all, packCPtr6, vc60);
+      340                 svst1_f32(p32_all, packCPtr6 + 16, vc61);
+      341                 svst1_f32(p32_all, packCPtr7, vc70);
+      342                 svst1_f32(p32_all, packCPtr7 + 16, vc71);
+      343             
+      344             #endif
+      345             }
+      346             
+      347             // old version, use indexed fmla
+      348             void kernel_12x32(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
+      349             
+      350                 float* packAPtr = packA;
+      351                 float* packBPtr = packB;
+      352                 float* packCPtr = packC;
+      353             
+      354             #ifdef _ASM_
+      355             
+      356                 float* packCPtr0  = packC;
+      357                 float* packCPtr1  = packC + 1  * ldc;
+      358                 float* packCPtr2  = packC + 2  * ldc;
+      359                 float* packCPtr3  = packC + 3  * ldc;
+      360                 float* packCPtr4  = packC + 4  * ldc;
+      361                 float* packCPtr5  = packC + 5  * ldc;
+      362                 float* packCPtr6  = packC + 6  * ldc;
+      363                 float* packCPtr7  = packC + 7  * ldc;
+      364                 float* packCPtr8  = packC + 8  * ldc;
+      365                 float* packCPtr9  = packC + 9  * ldc;
+      366                 float* packCPtr10 = packC + 10 * ldc;
+      367                 float* packCPtr11 = packC + 11 * ldc;
+      368             
+      369                 asm volatile(
+      370                     "ptrue  p0.s  \n"
+      371                     "mov    x4, #16 \n"
+      372                     "mov    x5, %[kc]    \n"
+      373             
+      374                     "cmp    w5, #0  \n"
+      375                     "b.eq    1f     \n"
+      376             
+      377                     "ld1w	{ z8.s },  p0/z, [%[pC0]]      \n"  // load C
+      378                     "ld1w	{ z9.s },  p0/z, [%[pC0], x4, lsl #2]    \n"
+      379                     "ld1w	{ z10.s }, p0/z, [%[pC1]]      \n"
+      380                     "ld1w	{ z11.s }, p0/z, [%[pC1], x4, lsl #2]    \n"
+      381                     "ld1w	{ z12.s }, p0/z, [%[pC2]]      \n"
+      382                     "ld1w	{ z13.s }, p0/z, [%[pC2], x4, lsl #2]    \n"
+      383                     "ld1w	{ z14.s }, p0/z, [%[pC3]]      \n"
+      384                     "ld1w	{ z15.s }, p0/z, [%[pC3], x4, lsl #2]    \n"
+      385                     "ld1w	{ z16.s }, p0/z, [%[pC4]]      \n"
+      386                     "ld1w	{ z17.s }, p0/z, [%[pC4], x4, lsl #2]    \n"
+      387                     "ld1w	{ z18.s }, p0/z, [%[pC5]]      \n"
+      388                     "ld1w	{ z19.s }, p0/z, [%[pC5], x4, lsl #2]    \n"
+      389                     "ld1w	{ z20.s }, p0/z, [%[pC6]]      \n"
+      390                     "ld1w	{ z21.s }, p0/z, [%[pC6], x4, lsl #2]    \n"
+      391                     "ld1w	{ z22.s }, p0/z, [%[pC7]]      \n"
+      392                     "ld1w	{ z23.s }, p0/z, [%[pC7], x4, lsl #2]    \n"
+      393                     "ld1w	{ z24.s }, p0/z, [%[pC8]]      \n"
+      394                     "ld1w	{ z25.s }, p0/z, [%[pC8], x4, lsl #2]    \n"
+      395                     "ld1w	{ z26.s }, p0/z, [%[pC9]]      \n"
+      396                     "ld1w	{ z27.s }, p0/z, [%[pC9], x4, lsl #2]    \n"
+      397                     "ld1w	{ z28.s }, p0/z, [%[pC10]]     \n"
+      398                     "ld1w	{ z29.s }, p0/z, [%[pC10], x4, lsl #2]    \n"
+      399                     "ld1w	{ z30.s }, p0/z, [%[pC11]]     \n"
+      400                     "ld1w	{ z31.s }, p0/z, [%[pC11], x4, lsl #2]    \n"
+      401             
+      402                 "0:                                                 \n"
+      403             
+      404             	    "ld1rqw	{ z0.s }, p0/z, [%[pA]]                 \n"
+      405             	    "ld1rqw	{ z1.s }, p0/z, [%[pA], #16]            \n"
+      406             	    "ld1rqw	{ z2.s }, p0/z, [%[pA], #32]            \n"
+      407             //        "prfm	pldl1keep, [%[pA], #128]                \n"
+      408             	    
+      409                     "ld1w	{ z3.s }, p0/z, [%[pB]]                 \n"
+      410             	    "ld1w	{ z4.s }, p0/z, [%[pB], x4, lsl #2]     \n"
+      411             //        "prfm	pldl1keep, [%[pB], #128]                \n"
+      412                     "add	%[pA], %[pA], #48                       \n"
+      413             
+      414                     "fmla	z8.s,  z3.s, z0.s[0]                    \n"
+      415                     "fmla	z10.s, z3.s, z0.s[1]                    \n"
+      416                     "fmla	z12.s, z3.s, z0.s[2]                    \n"
+      417                     "fmla	z14.s, z3.s, z0.s[3]                    \n"
+      418             
+      419                     "fmla	z9.s,  z4.s, z0.s[0]                    \n"
+      420                     "fmla	z11.s, z4.s, z0.s[1]                    \n"
+      421                     "fmla	z13.s, z4.s, z0.s[2]                    \n"
+      422                     "fmla	z15.s, z4.s, z0.s[3]                    \n"
+      423                     "add	%[pB], %[pB], #128                      \n"
+      424                     // "prfm	pldl1keep, [%[pA], #128]                 \n"
+      425             
+      426                     "fmla	z16.s, z3.s, z1.s[0]                    \n"
+      427                     "fmla	z18.s, z3.s, z1.s[1]                    \n"
+      428                     "fmla	z20.s, z3.s, z1.s[2]                    \n"
+      429                     "fmla	z22.s, z3.s, z1.s[3]                    \n"
+      430             
+      431                     "fmla	z17.s, z4.s, z1.s[0]                    \n"
+      432                     "fmla	z19.s, z4.s, z1.s[1]                    \n"
+      433                     "fmla	z21.s, z4.s, z1.s[2]                    \n"
+      434                     "fmla	z23.s, z4.s, z1.s[3]                    \n"
+      435                     "subs   x5, x5, #1                              \n"
+      436             //        "prfm	pldl1keep, [%[pA]]                      \n"
+      437             
+      438                     "fmla	z24.s, z3.s, z2.s[0]                    \n"
+      439                     "fmla	z26.s, z3.s, z2.s[1]                    \n"
+      440                     "fmla	z28.s, z3.s, z2.s[2]                    \n"
+      441                     "fmla	z30.s, z3.s, z2.s[3]                    \n"
+      442             
+      443                     "fmla	z25.s, z4.s, z2.s[0]                    \n"
+      444                     "fmla	z27.s, z4.s, z2.s[1]                    \n"
+      445                     "fmla	z29.s, z4.s, z2.s[2]                    \n"
+      446                     "fmla	z31.s, z4.s, z2.s[3]                    \n"
+      447             
+      448             
+      449                     "b.ne   0b                                      \n"
+      450                     
+      451                     "st1w	{ z8.s },  p0, [%[pC0]]      \n"  // store C
+      452                     "st1w	{ z9.s },  p0, [%[pC0], x4, lsl #2]    \n"
+      453                     "st1w	{ z10.s }, p0, [%[pC1]]      \n"
+      454                     "st1w	{ z11.s }, p0, [%[pC1], x4, lsl #2]    \n"
+      455                     "st1w	{ z12.s }, p0, [%[pC2]]      \n"
+      456                     "st1w	{ z13.s }, p0, [%[pC2], x4, lsl #2]    \n"
+      457                     "st1w	{ z14.s }, p0, [%[pC3]]      \n"
+      458                     "st1w	{ z15.s }, p0, [%[pC3], x4, lsl #2]    \n"
+      459                     "st1w	{ z16.s }, p0, [%[pC4]]      \n"
+      460                     "st1w	{ z17.s }, p0, [%[pC4], x4, lsl #2]    \n"
+      461                     "st1w	{ z18.s }, p0, [%[pC5]]      \n"
+      462                     "st1w	{ z19.s }, p0, [%[pC5], x4, lsl #2]    \n"
+      463                     "st1w	{ z20.s }, p0, [%[pC6]]      \n"
+      464                     "st1w	{ z21.s }, p0, [%[pC6], x4, lsl #2]    \n"
+      465                     "st1w	{ z22.s }, p0, [%[pC7]]      \n"
+      466                     "st1w	{ z23.s }, p0, [%[pC7], x4, lsl #2]    \n"
+      467                     "st1w	{ z24.s }, p0, [%[pC8]]      \n"
+      468                     "st1w	{ z25.s }, p0, [%[pC8], x4, lsl #2]    \n"
+      469                     "st1w	{ z26.s }, p0, [%[pC9]]      \n"
+      470                     "st1w	{ z27.s }, p0, [%[pC9], x4, lsl #2]    \n"
+      471                     "st1w	{ z28.s }, p0, [%[pC10]]     \n"
+      472                     "st1w	{ z29.s }, p0, [%[pC10], x4, lsl #2]    \n"
+      473                     "st1w	{ z30.s }, p0, [%[pC11]]     \n"
+      474                     "st1w	{ z31.s }, p0, [%[pC11], x4, lsl #2]    \n"
+      475             
+      476                 "1:                                                 \n"
+      477                     
+      478                 : [pA]"=&r"(packAPtr),     // %0
+      479                   [pB]"=&r"(packBPtr)      // %1
+      480                 : "[pA]"   (packAPtr),
+      481                   "[pB]"   (packBPtr), 
+      482                   [pC0] "r"(packCPtr0),    // %2
+      483                   [pC1] "r"(packCPtr1),    // %2
+      484                   [pC2] "r"(packCPtr2),    // %3
+      485                   [pC3] "r"(packCPtr3),    // %3
+      486                   [pC4] "r"(packCPtr4),    // %4
+      487                   [pC5] "r"(packCPtr5),    // %4
+      488                   [pC6] "r"(packCPtr6),    // %5
+      489                   [pC7] "r"(packCPtr7),    // %5
+      490                   [pC8] "r"(packCPtr8),    // %6
+      491                   [pC9] "r"(packCPtr9),    // %6
+      492                   [pC10]"r"(packCPtr10),   // %7
+      493                   [pC11]"r"(packCPtr11),   // %7
+      494                   [ldc] "r"(ldc),
+      495                   [kc]  "r"(kc_adjust),
+      496                   [preA]"r"(PREFETCH_A),
+      497                   [preB]"r"(PREFETCH_B),
+      498                   [preC]"r"(PREFETCH_C)
+      499                 : "memory", "cc", "p0", "x4", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+      500                   "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+      501                   "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+      502             
+      503             #else
+      504                 float* packCPtr0  = packC;
+      505                 float* packCPtr1  = packC + 1  * ldc;
+      506                 float* packCPtr2  = packC + 2  * ldc;
+      507                 float* packCPtr3  = packC + 3  * ldc;
+      508                 float* packCPtr4  = packC + 4  * ldc;
+      509                 float* packCPtr5  = packC + 5  * ldc;
+      510                 float* packCPtr6  = packC + 6  * ldc;
+      511                 float* packCPtr7  = packC + 7  * ldc;
+      512                 float* packCPtr8  = packC + 8  * ldc;
+      513                 float* packCPtr9  = packC + 9  * ldc;
+      514                 float* packCPtr10 = packC + 10 * ldc;
+      515                 float* packCPtr11 = packC + 11 * ldc;
+      516             
+      517                 const svbool_t p32_all = svptrue_b32();
+      518             
+      519                 svfloat32_t va0,   va1, va2;
+      520                 svfloat32_t vb0,   vb1;
+      521                 svfloat32_t vc00,  vc01;
+      522                 svfloat32_t vc10,  vc11;
+      523                 svfloat32_t vc20,  vc21;
+      524                 svfloat32_t vc30,  vc31;
+      525                 svfloat32_t vc40,  vc41;
+      526                 svfloat32_t vc50,  vc51;
+      527                 svfloat32_t vc60,  vc61;
+      528                 svfloat32_t vc70,  vc71;
+      529                 svfloat32_t vc80,  vc81;
+      530                 svfloat32_t vc90,  vc91;
+      531                 svfloat32_t vc100, vc101;
+      532                 svfloat32_t vc110, vc111;
+      533             
+      534                 vc00  = svld1_f32(p32_all, packCPtr0);
+      535                 vc01  = svld1_f32(p32_all, packCPtr0 + 16);
+      536                 vc10  = svld1_f32(p32_all, packCPtr1);
+      537                 vc11  = svld1_f32(p32_all, packCPtr1 + 16);
+      538                 vc20  = svld1_f32(p32_all, packCPtr2);
+      539                 vc21  = svld1_f32(p32_all, packCPtr2 + 16);
+      540                 vc30  = svld1_f32(p32_all, packCPtr3);
+      541                 vc31  = svld1_f32(p32_all, packCPtr3 + 16);
+      542                 vc40  = svld1_f32(p32_all, packCPtr4);
+      543                 vc41  = svld1_f32(p32_all, packCPtr4 + 16);
+      544                 vc50  = svld1_f32(p32_all, packCPtr5);
+      545                 vc51  = svld1_f32(p32_all, packCPtr5 + 16);
+      546                 vc60  = svld1_f32(p32_all, packCPtr6);
+      547                 vc61  = svld1_f32(p32_all, packCPtr6 + 16);
+      548                 vc70  = svld1_f32(p32_all, packCPtr7);
+      549                 vc71  = svld1_f32(p32_all, packCPtr7 + 16);
+      550                 vc80  = svld1_f32(p32_all, packCPtr8);
+      551                 vc81  = svld1_f32(p32_all, packCPtr8 + 16);
+      552                 vc90  = svld1_f32(p32_all, packCPtr9);
+      553                 vc91  = svld1_f32(p32_all, packCPtr9 + 16);
+      554                 vc100 = svld1_f32(p32_all, packCPtr10);
+      555                 vc101 = svld1_f32(p32_all, packCPtr10 + 16);
+      556                 vc110 = svld1_f32(p32_all, packCPtr11);
+      557                 vc111 = svld1_f32(p32_all, packCPtr11 + 16);
+      558             
+      559             
+      560                 // 计算
+      561                 for (int k = 0; k < kc_adjust; k++) {
+      562                     va0 = svld1rq(p32_all, packAPtr);
+      563                     va1 = svld1rq(p32_all, packAPtr + 4);
+      564                     va2 = svld1rq(p32_all, packAPtr + 8);
+      565             
+      566                     vb0 = svld1_f32(p32_all, packBPtr);
+      567                     vb1 = svld1_f32(p32_all, packBPtr + 16);
+      568             
+      569                     vc00 = svmla_lane_f32(vc00, vb0, va0, 0);
+      570                     vc01 = svmla_lane_f32(vc01, vb1, va0, 0);
+      571             
+      572                     vc10 = svmla_lane_f32(vc10, vb0, va0, 1);
+      573                     vc11 = svmla_lane_f32(vc11, vb1, va0, 1);
+      574             
+      575                     vc20 = svmla_lane_f32(vc20, vb0, va0, 2);
+      576                     vc21 = svmla_lane_f32(vc21, vb1, va0, 2);
+      577             
+      578                     vc30 = svmla_lane_f32(vc30, vb0, va0, 3);
+      579                     vc31 = svmla_lane_f32(vc31, vb1, va0, 3);
+      580             
+      581                     vc40 = svmla_lane_f32(vc40, vb0, va1, 0);
+      582                     vc41 = svmla_lane_f32(vc41, vb1, va1, 0);
+      583             
+      584                     vc50 = svmla_lane_f32(vc50, vb0, va1, 1);
+      585                     vc51 = svmla_lane_f32(vc51, vb1, va1, 1);
+      586             
+      587                     vc60 = svmla_lane_f32(vc60, vb0, va1, 2);
+      588                     vc61 = svmla_lane_f32(vc61, vb1, va1, 2);
+      589             
+      590                     vc70 = svmla_lane_f32(vc70, vb0, va1, 3);
+      591                     vc71 = svmla_lane_f32(vc71, vb1, va1, 3);
+      592             
+      593                     vc80 = svmla_lane_f32(vc80, vb0, va2, 0);
+      594                     vc81 = svmla_lane_f32(vc81, vb1, va2, 0);
+      595             
+      596                     vc90 = svmla_lane_f32(vc90, vb0, va2, 1);
+      597                     vc91 = svmla_lane_f32(vc91, vb1, va2, 1);
+      598             
+      599                     vc100 = svmla_lane_f32(vc100, vb0, va2, 2);
+      600                     vc101 = svmla_lane_f32(vc101, vb1, va2, 2);
+      601             
+      602                     vc110 = svmla_lane_f32(vc110, vb0, va2, 3);
+      603                     vc111 = svmla_lane_f32(vc111, vb1, va2, 3);
+      604             
+      605                     packAPtr += 12;
+      606                     packBPtr += 32;
+      607                 }
+      608             
+      609                 // 将结果写回
+      610                 svst1_f32(p32_all, packCPtr0, vc00);
+      611                 svst1_f32(p32_all, packCPtr0 + 16, vc01);
+      612                 svst1_f32(p32_all, packCPtr1, vc10);
+      613                 svst1_f32(p32_all, packCPtr1 + 16, vc11);
+      614                 svst1_f32(p32_all, packCPtr2, vc20);
+      615                 svst1_f32(p32_all, packCPtr2 + 16, vc21);
+      616                 svst1_f32(p32_all, packCPtr3, vc30);
+      617                 svst1_f32(p32_all, packCPtr3 + 16, vc31);
+      618                 svst1_f32(p32_all, packCPtr4, vc40);
+      619                 svst1_f32(p32_all, packCPtr4 + 16, vc41);
+      620                 svst1_f32(p32_all, packCPtr5, vc50);
+      621                 svst1_f32(p32_all, packCPtr5 + 16, vc51);
+      622                 svst1_f32(p32_all, packCPtr6, vc60);
+      623                 svst1_f32(p32_all, packCPtr6 + 16, vc61);
+      624                 svst1_f32(p32_all, packCPtr7, vc70);
+      625                 svst1_f32(p32_all, packCPtr7 + 16, vc71);
+      626                 svst1_f32(p32_all, packCPtr8, vc80);
+      627                 svst1_f32(p32_all, packCPtr8 + 16, vc81);
+      628                 svst1_f32(p32_all, packCPtr9, vc90);
+      629                 svst1_f32(p32_all, packCPtr9 + 16, vc91);
+      630                 svst1_f32(p32_all, packCPtr10, vc100);
+      631                 svst1_f32(p32_all, packCPtr10 + 16, vc101);
+      632                 svst1_f32(p32_all, packCPtr11, vc110);
+      633                 svst1_f32(p32_all, packCPtr11 + 16, vc111);
+      634             
+      635             #endif
+      636             }
+      637             
+      638             // new version, use broadcast and fmla and loop unroll by 2
+      639             void kernel_4x64(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
+      640                 float* packAPtr = packA;
+      641                 float* packBPtr = packB;
+      642                 float* packCPtr = packC;
+      643             
+      644             #ifdef _ASM_
+      645             
+      646                 float* packCPtr0  = packC;
+      647                 float* packCPtr1  = packC + 1  * ldc;
+      648                 float* packCPtr2  = packC + 2  * ldc;
+      649                 float* packCPtr3  = packC + 3  * ldc;
+      650             
+      651                 asm volatile(
+      652                     "ptrue  p0.s  \n"
+      653                     "mov    x4, #16 \n"
+      654                     "mov    x5, %[kc]    \n"
+      655                     "lsr    x6, x5, 0x1  \n"
+      656             
+      657                     "cmp    w5, #0  \n"
+      658                     "b.eq   1f     \n"
+      659             
+      660             		//"add	%[pC0], %[pC0], 256*2 \n"
+      661             		//"prfm	pstl1keep, [%[pC0]] \n"
+      662             		//"sub	%[pC0], %[pC0], 256*2 \n"
+      663             
+      664                     "ld1w	{ z16.s }, p0/z, [%[pC0]]      \n"
+      665                     "ld1w	{ z17.s }, p0/z, [%[pC0], #1, MUL VL]    \n"
+      666                     "ld1w	{ z18.s }, p0/z, [%[pC0], #2, MUL VL]    \n"
+      667                     "ld1w	{ z19.s }, p0/z, [%[pC0], #3, MUL VL]    \n"
+      668                     "ld1w	{ z20.s }, p0/z, [%[pC1]]      \n"
+      669                     "ld1w	{ z21.s }, p0/z, [%[pC1], #1, MUL VL]    \n"
+      670                     "ld1w	{ z22.s }, p0/z, [%[pC1], #2, MUL VL]    \n"
+      671                     "ld1w	{ z23.s }, p0/z, [%[pC1], #3, MUL VL]    \n"
+      672                     "ld1w	{ z24.s }, p0/z, [%[pC2]]      \n"
+      673                     "ld1w	{ z25.s }, p0/z, [%[pC2], #1, MUL VL]    \n"
+      674                     "ld1w	{ z26.s }, p0/z, [%[pC2], #2, MUL VL]    \n"
+      675                     "ld1w	{ z27.s }, p0/z, [%[pC2], #3, MUL VL]    \n"
+      676                     "ld1w	{ z28.s }, p0/z, [%[pC3]]     \n"
+      677                     "ld1w	{ z29.s }, p0/z, [%[pC3], #1, MUL VL]    \n"
+      678                     "ld1w	{ z30.s }, p0/z, [%[pC3], #2, MUL VL]    \n"
+      679                     "ld1w	{ z31.s }, p0/z, [%[pC3], #3, MUL VL]    \n"
+      680             
+      681                     // load B
+      682                     "ld1w	{ z8.s },  p0/z, [%[pB]]                \n"
+      683             	    "ld1w	{ z9.s },  p0/z, [%[pB], #1, MUL VL]    \n"
+      684                     "ld1w	{ z10.s }, p0/z, [%[pB], #2, MUL VL]    \n"
+      685             	    "ld1w	{ z11.s }, p0/z, [%[pB], #3, MUL VL]    \n"
+      686             
+      687                     // load A
+      688                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+      689             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+      690                     "ld1rw	{ z2.s }, p0/z, [%[pA], #8]             \n"
+      691             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #12]            \n"
+      692             
+      693                 "0:                                                 \n"
+      694             
+      695                     // ------------- loop 1 -------------
+      696                     // load B
+      697                     "ld1w	{ z12.s }, p0/z, [%[pB], #4, MUL VL]    \n"
+      698             	    "ld1w	{ z13.s }, p0/z, [%[pB], #5, MUL VL]    \n"
+      699                     "ld1w	{ z14.s }, p0/z, [%[pB], #6, MUL VL]    \n"
+      700             	    "ld1w	{ z15.s }, p0/z, [%[pB], #7, MUL VL]    \n"
+      701             
+      702                     // load A
+      703                     "ld1rw	{ z4.s }, p0/z, [%[pA], #16]            \n"
+      704             	    "ld1rw	{ z5.s }, p0/z, [%[pA], #20]            \n"
+      705                     "ld1rw	{ z6.s }, p0/z, [%[pA], #24]            \n"
+      706             	    "ld1rw	{ z7.s }, p0/z, [%[pA], #28]            \n"
+      707                     
+      708                     "prfm	pldl1keep, [%[pA], #768]                \n"
+      709                     
+      710                     "fmla	z16.s, p0/m, z8.s,  z0.s                \n"
+      711                     "fmla	z17.s, p0/m, z9.s,  z0.s                \n"
+      712                     "fmla	z18.s, p0/m, z10.s, z0.s                \n"
+      713                     "fmla	z19.s, p0/m, z11.s, z0.s                \n"
+      714             
+      715                     "fmla	z20.s, p0/m, z8.s,  z1.s                \n"
+      716                     "fmla	z21.s, p0/m, z9.s,  z1.s                \n"
+      717                     "fmla	z22.s, p0/m, z10.s, z1.s                \n"
+      718                     "fmla	z23.s, p0/m, z11.s, z1.s                \n"
+      719             
+      720                     "prfm	pldl1keep, [%[pA], #1024]               \n"
+      721                     "add	%[pB], %[pB], #512                      \n"
+      722             
+      723                     "fmla	z24.s, p0/m, z8.s,  z2.s                \n"
+      724                     "fmla	z25.s, p0/m, z9.s,  z2.s                \n"
+      725                     "fmla	z26.s, p0/m, z10.s, z2.s                \n"
+      726                     "fmla	z27.s, p0/m, z11.s, z2.s                \n"
+      727             
+      728                     "add	%[pA], %[pA], #32                       \n"
+      729             
+      730                     "fmla	z28.s, p0/m, z8.s,  z3.s                \n"
+      731                     "fmla	z29.s, p0/m, z9.s,  z3.s                \n"
+      732                     "fmla	z30.s, p0/m, z10.s, z3.s                \n"
+      733                     "fmla	z31.s, p0/m, z11.s, z3.s                \n"
+      734             
+      735                     // -------------- loop 2 -----------------
+      736             
+      737                     // load B
+      738                     "ld1w	{ z8.s },  p0/z, [%[pB]]                \n"
+      739             	    "ld1w	{ z9.s },  p0/z, [%[pB], #1, MUL VL]    \n"
+      740                     "ld1w	{ z10.s }, p0/z, [%[pB], #2, MUL VL]    \n"
+      741             	    "ld1w	{ z11.s }, p0/z, [%[pB], #3, MUL VL]    \n"
+      742             
+      743                     // load A
+      744                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+      745             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+      746                     "ld1rw	{ z2.s }, p0/z, [%[pA], #8]             \n"
+      747             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #12]            \n"
+      748             
+      749                     "prfm	pldl1keep, [%[pA], #256]                \n"
+      750             
+      751                     "fmla	z16.s, p0/m, z12.s, z4.s                \n"
+      752                     "fmla	z17.s, p0/m, z13.s, z4.s                \n"
+      753                     "fmla	z18.s, p0/m, z14.s, z4.s                \n"
+      754                     "fmla	z19.s, p0/m, z15.s, z4.s                \n"
+      755             
+      756                     "fmla	z20.s, p0/m, z12.s, z5.s                \n"
+      757                     "fmla	z21.s, p0/m, z13.s, z5.s                \n"
+      758                     "fmla	z22.s, p0/m, z14.s, z5.s                \n"
+      759                     "fmla	z23.s, p0/m, z15.s, z5.s                \n"
+      760             
+      761                     "prfm	pldl1keep, [%[pA], #512]                \n"
+      762                     "fmla	z24.s, p0/m, z12.s, z6.s                \n"
+      763                     "fmla	z25.s, p0/m, z13.s, z6.s                \n"
+      764                     "fmla	z26.s, p0/m, z14.s, z6.s                \n"
+      765                     "fmla	z27.s, p0/m, z15.s, z6.s                \n"
+      766             
+      767                     "fmla	z28.s, p0/m, z12.s, z7.s                \n"
+      768                     "fmla	z29.s, p0/m, z13.s, z7.s                \n"
+      769                     "fmla	z30.s, p0/m, z14.s, z7.s                \n"
+      770                     "fmla	z31.s, p0/m, z15.s, z7.s                \n"
+      771             
+      772                     "subs   x6, x6, #1                              \n"
+      773                     "b.ne   0b                                      \n"
+      774                     
+      775                     "st1w	{ z16.s }, p0, [%[pC0]]      \n"
+      776                     "st1w	{ z17.s }, p0, [%[pC0], #1, MUL VL]    \n"
+      777                     "st1w	{ z18.s }, p0, [%[pC0], #2, MUL VL]    \n"
+      778                     "st1w	{ z19.s }, p0, [%[pC0], #3, MUL VL]    \n"
+      779                     "st1w	{ z20.s }, p0, [%[pC1]]      \n"
+      780                     "st1w	{ z21.s }, p0, [%[pC1], #1, MUL VL]    \n"
+      781                     "st1w	{ z22.s }, p0, [%[pC1], #2, MUL VL]    \n"
+      782                     "st1w	{ z23.s }, p0, [%[pC1], #3, MUL VL]    \n"
+      783                     "st1w	{ z24.s }, p0, [%[pC2]]      \n"
+      784                     "st1w	{ z25.s }, p0, [%[pC2], #1, MUL VL]    \n"
+      785                     "st1w	{ z26.s }, p0, [%[pC2], #2, MUL VL]    \n"
+      786                     "st1w	{ z27.s }, p0, [%[pC2], #3, MUL VL]    \n"
+      787                     "st1w	{ z28.s }, p0, [%[pC3]]     \n"
+      788                     "st1w	{ z29.s }, p0, [%[pC3], #1, MUL VL]    \n"
+      789                     "st1w	{ z30.s }, p0, [%[pC3], #2, MUL VL]    \n"
+      790                     "st1w	{ z31.s }, p0, [%[pC3], #3, MUL VL]    \n"
+      791             
+      792                 "1:                                                \n"
+      793                     
+      794                 : [pA]"=&r"(packAPtr),     // %0
+      795                   [pB]"=&r"(packBPtr)      // %1
+      796                 : "[pA]"   (packAPtr),
+      797                   "[pB]"   (packBPtr), 
+      798                   [pC0] "r"(packCPtr0),    // %2
+      799                   [pC1] "r"(packCPtr1),    // %2
+      800                   [pC2] "r"(packCPtr2),    // %3
+      801                   [pC3] "r"(packCPtr3),    // %3
+      802                   [ldc] "r"(ldc),
+      803                   [kc]  "r"(kc_adjust),
+      804                   [preA]"r"(PREFETCH_A),
+      805                   [preB]"r"(PREFETCH_B),
+      806                   [preC]"r"(PREFETCH_C)
+      807                 : "memory", "cc", "p0", "x4", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+      808                   "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+      809                   "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+      810             
+      811             #else
+      812             #endif
+      813             }
+      814             
+      815             // new version, use broadcast and fmla
+      816             void kernel_12x32_v1(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
+      817             
+      818                 float* packAPtr = packA;
+      819                 float* packBPtr = packB;
+      820                 float* packCPtr = packC;
+      821             
+      822             #ifdef _ASM_
+      823             
+      824                 float* packCPtr0  = packC;
+      825                 float* packCPtr1  = packC + 1  * ldc;
+      826                 float* packCPtr2  = packC + 2  * ldc;
+      827                 float* packCPtr3  = packC + 3  * ldc;
+      828                 float* packCPtr4  = packC + 4  * ldc;
+      829                 float* packCPtr5  = packC + 5  * ldc;
+      830                 float* packCPtr6  = packC + 6  * ldc;
+      831                 float* packCPtr7  = packC + 7  * ldc;
+      832                 float* packCPtr8  = packC + 8  * ldc;
+      833                 float* packCPtr9  = packC + 9  * ldc;
+      834                 float* packCPtr10 = packC + 10 * ldc;
+      835                 float* packCPtr11 = packC + 11 * ldc;
+      836             
+      837                 asm volatile(
+      838                     "ptrue  p0.s  \n"
+      839                     "mov    x4, #16 \n"
+      840                     "mov    x5, %[kc]    \n"
+      841             
+      842                     "cmp    w5, #0  \n"
+      843                     "b.eq    1f     \n"
+      844             
+      845                     "ld1w	{ z8.s },  p0/z, [%[pC0]]      \n"  // load C
+      846                     "ld1w	{ z9.s },  p0/z, [%[pC0], x4, lsl #2]    \n"
+      847                     "ld1w	{ z10.s }, p0/z, [%[pC1]]      \n"
+      848                     "ld1w	{ z11.s }, p0/z, [%[pC1], x4, lsl #2]    \n"
+      849                     "ld1w	{ z12.s }, p0/z, [%[pC2]]      \n"
+      850                     "ld1w	{ z13.s }, p0/z, [%[pC2], x4, lsl #2]    \n"
+      851                     "ld1w	{ z14.s }, p0/z, [%[pC3]]      \n"
+      852                     "ld1w	{ z15.s }, p0/z, [%[pC3], x4, lsl #2]    \n"
+      853                     "ld1w	{ z16.s }, p0/z, [%[pC4]]      \n"
+      854                     "ld1w	{ z17.s }, p0/z, [%[pC4], x4, lsl #2]    \n"
+      855                     "ld1w	{ z18.s }, p0/z, [%[pC5]]      \n"
+      856                     "ld1w	{ z19.s }, p0/z, [%[pC5], x4, lsl #2]    \n"
+      857                     "ld1w	{ z20.s }, p0/z, [%[pC6]]      \n"
+      858                     "ld1w	{ z21.s }, p0/z, [%[pC6], x4, lsl #2]    \n"
+      859                     "ld1w	{ z22.s }, p0/z, [%[pC7]]      \n"
+      860                     "ld1w	{ z23.s }, p0/z, [%[pC7], x4, lsl #2]    \n"
+      861                     "ld1w	{ z24.s }, p0/z, [%[pC8]]      \n"
+      862                     "ld1w	{ z25.s }, p0/z, [%[pC8], x4, lsl #2]    \n"
+      863                     "ld1w	{ z26.s }, p0/z, [%[pC9]]      \n"
+      864                     "ld1w	{ z27.s }, p0/z, [%[pC9], x4, lsl #2]    \n"
+      865                     "ld1w	{ z28.s }, p0/z, [%[pC10]]     \n"
+      866                     "ld1w	{ z29.s }, p0/z, [%[pC10], x4, lsl #2]    \n"
+      867                     "ld1w	{ z30.s }, p0/z, [%[pC11]]     \n"
+      868                     "ld1w	{ z31.s }, p0/z, [%[pC11], x4, lsl #2]    \n"
+      869             
+      870                 "0:                                                 \n"
+      871             	
+      872                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+      873             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+      874             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #8]             \n"
+      875             	    "ld1rw	{ z5.s }, p0/z, [%[pA], #12]            \n"
+      876             	    "ld1rw	{ z6.s }, p0/z, [%[pA], #16]            \n"
+      877             
+      878             //        "prfm	pldl1keep, [%[pA], #128]                \n"
+      879             	    
+      880                     "ld1w	{ z3.s }, p0/z, [%[pB]]                 \n"
+      881             	    "ld1w	{ z4.s }, p0/z, [%[pB], x4, lsl #2]     \n"
+      882             
+      883                     "fmla	z8.s,  p0/m, z3.s, z0.s                 \n"
+      884                     "fmla	z9.s,  p0/m, z4.s, z0.s                 \n"
+      885                     
+      886                     "fmla	z10.s, p0/m, z3.s, z1.s                 \n"
+      887                     "fmla	z11.s, p0/m, z4.s, z1.s                 \n"
+      888             
+      889                     "fmla	z12.s, p0/m, z3.s, z2.s                 \n"
+      890                     "fmla	z13.s, p0/m, z4.s, z2.s                 \n"
+      891             
+      892                     "fmla	z14.s, p0/m, z3.s, z5.s                 \n"
+      893                     "fmla	z15.s, p0/m, z4.s, z5.s                 \n"
+      894                     
+      895                     "fmla	z16.s, p0/m, z3.s, z6.s                 \n"
+      896                     "fmla	z17.s, p0/m, z4.s, z6.s                 \n"
+      897             
+      898                     "ld1rw	{ z0.s }, p0/z, [%[pA], #20]            \n"
+      899             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #24]            \n"
+      900             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #28]            \n"
+      901             	    "ld1rw	{ z5.s }, p0/z, [%[pA], #32]            \n"
+      902             	    "ld1rw	{ z6.s }, p0/z, [%[pA], #36]            \n"
+      903             
+      904                     "fmla	z18.s, p0/m, z3.s, z0.s                 \n"
+      905                     "fmla	z19.s, p0/m, z4.s, z0.s                 \n"
+      906             
+      907                     "fmla	z20.s, p0/m, z3.s, z1.s                 \n"
+      908                     "fmla	z21.s, p0/m, z4.s, z1.s                 \n"
+      909                     
+      910                     "fmla	z22.s, p0/m, z3.s, z2.s                 \n"
+      911                     "fmla	z23.s, p0/m, z4.s, z2.s                 \n"
+      912             
+      913                     "fmla	z24.s, p0/m, z3.s, z5.s                 \n"
+      914                     "fmla	z25.s, p0/m, z4.s, z5.s                 \n"
+      915             
+      916                     "fmla	z26.s, p0/m, z3.s, z6.s                 \n"
+      917                     "fmla	z27.s, p0/m, z4.s, z6.s                 \n"
+      918             
+      919                     "ld1rw	{ z0.s }, p0/z, [%[pA], #40]            \n"
+      920             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #44]            \n"
+      921             
+      922                     "fmla	z28.s, p0/m, z3.s, z0.s                 \n"
+      923                     "fmla	z29.s, p0/m, z4.s, z0.s                 \n"
+      924             
+      925                     "add	%[pB], %[pB], #128                      \n"
+      926                     "add	%[pA], %[pA], #48                       \n"
+      927                     "subs   x5, x5, #1                              \n"
+      928             
+      929                     "fmla	z30.s, p0/m, z3.s, z1.s                 \n"
+      930                     "fmla	z31.s, p0/m, z4.s, z1.s                 \n"
+      931             
+      932                     "b.ne   0b                                      \n"
+      933                     
+      934                     "st1w	{ z8.s },  p0, [%[pC0]]      \n"  // store C
+      935                     "st1w	{ z9.s },  p0, [%[pC0], x4, lsl #2]    \n"
+      936                     "st1w	{ z10.s }, p0, [%[pC1]]      \n"
+      937                     "st1w	{ z11.s }, p0, [%[pC1], x4, lsl #2]    \n"
+      938                     "st1w	{ z12.s }, p0, [%[pC2]]      \n"
+      939                     "st1w	{ z13.s }, p0, [%[pC2], x4, lsl #2]    \n"
+      940                     "st1w	{ z14.s }, p0, [%[pC3]]      \n"
+      941                     "st1w	{ z15.s }, p0, [%[pC3], x4, lsl #2]    \n"
+      942                     "st1w	{ z16.s }, p0, [%[pC4]]      \n"
+      943                     "st1w	{ z17.s }, p0, [%[pC4], x4, lsl #2]    \n"
+      944                     "st1w	{ z18.s }, p0, [%[pC5]]      \n"
+      945                     "st1w	{ z19.s }, p0, [%[pC5], x4, lsl #2]    \n"
+      946                     "st1w	{ z20.s }, p0, [%[pC6]]      \n"
+      947                     "st1w	{ z21.s }, p0, [%[pC6], x4, lsl #2]    \n"
+      948                     "st1w	{ z22.s }, p0, [%[pC7]]      \n"
+      949                     "st1w	{ z23.s }, p0, [%[pC7], x4, lsl #2]    \n"
+      950                     "st1w	{ z24.s }, p0, [%[pC8]]      \n"
+      951                     "st1w	{ z25.s }, p0, [%[pC8], x4, lsl #2]    \n"
+      952                     "st1w	{ z26.s }, p0, [%[pC9]]      \n"
+      953                     "st1w	{ z27.s }, p0, [%[pC9], x4, lsl #2]    \n"
+      954                     "st1w	{ z28.s }, p0, [%[pC10]]     \n"
+      955                     "st1w	{ z29.s }, p0, [%[pC10], x4, lsl #2]    \n"
+      956                     "st1w	{ z30.s }, p0, [%[pC11]]     \n"
+      957                     "st1w	{ z31.s }, p0, [%[pC11], x4, lsl #2]    \n"
+      958             
+      959                 "1:                                                 \n"
+      960                     
+      961                 : [pA]"=&r"(packAPtr),     // %0
+      962                   [pB]"=&r"(packBPtr)      // %1
+      963                 : "[pA]"   (packAPtr),
+      964                   "[pB]"   (packBPtr), 
+      965                   [pC0] "r"(packCPtr0),    // %2
+      966                   [pC1] "r"(packCPtr1),    // %2
+      967                   [pC2] "r"(packCPtr2),    // %3
+      968                   [pC3] "r"(packCPtr3),    // %3
+      969                   [pC4] "r"(packCPtr4),    // %4
+      970                   [pC5] "r"(packCPtr5),    // %4
+      971                   [pC6] "r"(packCPtr6),    // %5
+      972                   [pC7] "r"(packCPtr7),    // %5
+      973                   [pC8] "r"(packCPtr8),    // %6
+      974                   [pC9] "r"(packCPtr9),    // %6
+      975                   [pC10]"r"(packCPtr10),   // %7
+      976                   [pC11]"r"(packCPtr11),   // %7
+      977                   [ldc] "r"(ldc),
+      978                   [kc]  "r"(kc_adjust),
+      979                   [preA]"r"(PREFETCH_A),
+      980                   [preB]"r"(PREFETCH_B),
+      981                   [preC]"r"(PREFETCH_C)
+      982                 : "memory", "cc", "p0", "x4", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+      983                   "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+      984                   "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+      985             
+      986             #else
+      987             #endif
+      988             }
+      989             
+      990             // new version, use broadcast and fmla and loop unroll by 2
+      991             void kernel_12x32_v2(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
+      992             
+      993                 float* packAPtr = packA;
+      994                 float* packBPtr = packB;
+      995                 float* packCPtr = packC;
+      996             
+      997             #ifdef _ASM_
+      998             
+      999                 float* packCPtr0  = packC;
+     1000                 float* packCPtr1  = packC + 1  * ldc;
+     1001                 float* packCPtr2  = packC + 2  * ldc;
+     1002                 float* packCPtr3  = packC + 3  * ldc;
+     1003                 float* packCPtr4  = packC + 4  * ldc;
+     1004                 float* packCPtr5  = packC + 5  * ldc;
+     1005                 float* packCPtr6  = packC + 6  * ldc;
+     1006                 float* packCPtr7  = packC + 7  * ldc;
+     1007                 float* packCPtr8  = packC + 8  * ldc;
+     1008                 float* packCPtr9  = packC + 9  * ldc;
+     1009                 float* packCPtr10 = packC + 10 * ldc;
+     1010                 float* packCPtr11 = packC + 11 * ldc;
+     1011             
+     1012                 asm volatile(
+     1013                     "ptrue  p0.s  \n"
+     1014                     "mov    x4, #16 \n"
+     1015                     "mov    x5, %[kc]    \n"
+     1016                     "lsr    x6, x5, 0x1  \n"
+     1017             		"mov    x7, #0 \n"
+     1018             
+     1019                     "cmp    w5, #0  \n"
+     1020                     "b.eq    1f     \n"
+     1021             
+     1022             		//"add	%[pC0], %[pC0], 256*2 \n"
+     1023             		//"prfm	pstl1keep, [%[pC0]] \n"
+     1024             		//"sub	%[pC0], %[pC0], 256*2 \n"
+     1025             
+     1026                     "ld1w	{ z8.s },  p0/z, [%[pC0]]      \n"  // load C
+     1027                     "ld1w	{ z9.s },  p0/z, [%[pC0], x4, lsl #2]    \n"
+     1028                     "ld1w	{ z10.s }, p0/z, [%[pC1]]      \n"
+     1029                     "ld1w	{ z11.s }, p0/z, [%[pC1], x4, lsl #2]    \n"
+     1030                     "ld1w	{ z12.s }, p0/z, [%[pC2]]      \n"
+     1031                     "ld1w	{ z13.s }, p0/z, [%[pC2], x4, lsl #2]    \n"
+     1032                     "ld1w	{ z14.s }, p0/z, [%[pC3]]      \n"
+     1033                     "ld1w	{ z15.s }, p0/z, [%[pC3], x4, lsl #2]    \n"
+     1034                     "ld1w	{ z16.s }, p0/z, [%[pC4]]      \n"
+     1035                     "ld1w	{ z17.s }, p0/z, [%[pC4], x4, lsl #2]    \n"
+     1036                     "ld1w	{ z18.s }, p0/z, [%[pC5]]      \n"
+     1037                     "ld1w	{ z19.s }, p0/z, [%[pC5], x4, lsl #2]    \n"
+     1038                     "ld1w	{ z20.s }, p0/z, [%[pC6]]      \n"
+     1039                     "ld1w	{ z21.s }, p0/z, [%[pC6], x4, lsl #2]    \n"
+     1040                     "ld1w	{ z22.s }, p0/z, [%[pC7]]      \n"
+     1041                     "ld1w	{ z23.s }, p0/z, [%[pC7], x4, lsl #2]    \n"
+     1042                     "ld1w	{ z24.s }, p0/z, [%[pC8]]      \n"
+     1043                     "ld1w	{ z25.s }, p0/z, [%[pC8], x4, lsl #2]    \n"
+     1044                     "ld1w	{ z26.s }, p0/z, [%[pC9]]      \n"
+     1045                     "ld1w	{ z27.s }, p0/z, [%[pC9], x4, lsl #2]    \n"
+     1046                     "ld1w	{ z28.s }, p0/z, [%[pC10]]     \n"
+     1047                     "ld1w	{ z29.s }, p0/z, [%[pC10], x4, lsl #2]    \n"
+     1048                     "ld1w	{ z30.s }, p0/z, [%[pC11]]     \n"
+     1049                     "ld1w	{ z31.s }, p0/z, [%[pC11], x4, lsl #2]    \n"
+     1050             
+     1051             
+     1052                     "ld1w	{ z4.s }, p0/z, [%[pB]]                 \n"
+     1053             	    "ld1w	{ z5.s }, p0/z, [%[pB], #1, MUL VL]     \n"
+     1054             
+     1055                     "prfm	pldl1keep, [%[pA],256*0]                \n"
+     1056                     "prfm	pldl1keep, [%[pA],256*1]                \n"
+     1057                     "prfm	pldl1keep, [%[pA],256*2]                \n"
+     1058                     "prfm	pldl1keep, [%[pA],256*3]                \n"
+     1059                     "prfm	pldl1keep, [%[pA],256*4]                \n"
+     1060                     "prfm	pldl1keep, [%[pA],256*5]                \n"
+     1061                     "prfm	pldl1keep, [%[pA],256*6]                \n"
+     1062                     "prfm	pldl1keep, [%[pA],256*7]                \n"
+     1063                     "prfm	pldl1keep, [%[pA],256*8]                \n"
+     1064             
+     1065                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+     1066             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+     1067             
+     1068                 "0:                                                 \n"
+     1069             
+     1070                     // ------------- loop 1 -------------
+     1071             	    "ld1w	{ z6.s }, p0/z, [%[pB], #2, MUL VL]    \n"
+     1072             	    "ld1w	{ z7.s }, p0/z, [%[pB], #3, MUL VL]    \n"
+     1073             	
+     1074             
+     1075                     "fmla	z8.s,  p0/m, z4.s, z0.s                 \n"
+     1076                     "fmla	z9.s,  p0/m, z5.s, z0.s                 \n"
+     1077             
+     1078                     "prfm	pldl1keep, [%[pA], 256*9]               \n"
+     1079             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #8]             \n"
+     1080             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #12]            \n"
+     1081                     "fmla	z10.s, p0/m, z4.s, z1.s                 \n"
+     1082                     "fmla	z11.s, p0/m, z5.s, z1.s                 \n"
+     1083                     
+     1084                     "ld1rw	{ z0.s }, p0/z, [%[pA], #16]            \n"
+     1085             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #20]            \n"
+     1086                     
+     1087                     "fmla	z12.s, p0/m, z4.s, z2.s                 \n"
+     1088                     "fmla	z13.s, p0/m, z5.s, z2.s                 \n"
+     1089                     "fmla	z14.s, p0/m, z4.s, z3.s                 \n"
+     1090                     "fmla	z15.s, p0/m, z5.s, z3.s                 \n"
+     1091             
+     1092             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #24]            \n"
+     1093             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #28]            \n"
+     1094                     
+     1095                     "fmla	z16.s, p0/m, z4.s, z0.s                 \n"
+     1096                     "fmla	z17.s, p0/m, z5.s, z0.s                 \n"
+     1097                     "fmla	z18.s, p0/m, z4.s, z1.s                 \n"
+     1098                     "fmla	z19.s, p0/m, z5.s, z1.s                 \n"
+     1099             
+     1100                     // "prfm	pldl1keep, [%[pA], 256*10]              \n"
+     1101                     "ld1rw	{ z0.s }, p0/z, [%[pA], #32]            \n"
+     1102             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #36]            \n"
+     1103             
+     1104                     "fmla	z20.s, p0/m, z4.s, z2.s                 \n"
+     1105                     "fmla	z21.s, p0/m, z5.s, z2.s                 \n"
+     1106                     "fmla	z22.s, p0/m, z4.s, z3.s                 \n"
+     1107                     "fmla	z23.s, p0/m, z5.s, z3.s                 \n"
+     1108             
+     1109                     "ld1rw	{ z2.s }, p0/z, [%[pA], #40]            \n"
+     1110             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #44]            \n"
+     1111             
+     1112                     "add	%[pB], %[pB], #256                      \n"
+     1113             
+     1114                     "fmla	z24.s, p0/m, z4.s, z0.s                 \n"
+     1115                     "fmla	z25.s, p0/m, z5.s, z0.s                 \n"
+     1116                     "fmla	z26.s, p0/m, z4.s, z1.s                 \n"
+     1117                     "fmla	z27.s, p0/m, z5.s, z1.s                 \n"
+     1118             
+     1119                     "ld1rw	{ z0.s }, p0/z, [%[pA], #48]            \n"
+     1120             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #52]            \n" 
+     1121             
+     1122                     "fmla	z28.s, p0/m, z4.s, z2.s                 \n"
+     1123                     "fmla	z29.s, p0/m, z5.s, z2.s                 \n"
+     1124                     "fmla	z30.s, p0/m, z4.s, z3.s                 \n"
+     1125                     "fmla	z31.s, p0/m, z5.s, z3.s                 \n"
+     1126             
+     1127                     // -------------- loop 2 -----------------
+     1128                     "ld1w	{ z4.s },  p0/z, [%[pB]]                \n"
+     1129             	    "ld1w	{ z5.s },  p0/z, [%[pB], #1, MUL VL]    \n"
+     1130             
+     1131                     "prfm	pldl1keep, [%[pA], #256*10]             \n"
+     1132             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #56]            \n"
+     1133             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #60]            \n"
+     1134             
+     1135                     "fmla	z8.s,  p0/m, z6.s, z0.s                 \n"
+     1136                     "fmla	z9.s,  p0/m, z7.s, z0.s                 \n"
+     1137                     "fmla	z10.s, p0/m, z6.s, z1.s                 \n"
+     1138                     "fmla	z11.s, p0/m, z7.s, z1.s                 \n"
+     1139             
+     1140                     "ld1rw	{ z0.s }, p0/z, [%[pA], #64]            \n"
+     1141             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #68]            \n"
+     1142             
+     1143                     "fmla	z12.s, p0/m, z6.s, z2.s                 \n"
+     1144                     "fmla	z13.s, p0/m, z7.s, z2.s                 \n"
+     1145                     "fmla	z14.s, p0/m, z6.s, z3.s                 \n"
+     1146                     "fmla	z15.s, p0/m, z7.s, z3.s                 \n"
+     1147             
+     1148             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #72]            \n"
+     1149             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #76]            \n"
+     1150                     
+     1151                     "fmla	z16.s, p0/m, z6.s, z0.s                 \n"
+     1152                     "fmla	z17.s, p0/m, z7.s, z0.s                 \n"
+     1153                     "fmla	z18.s, p0/m, z6.s, z1.s                 \n"
+     1154                     "fmla	z19.s, p0/m, z7.s, z1.s                 \n"
+     1155             
+     1156                     // "prfm	pldl1keep, [%[pA], #1024]               \n"
+     1157                     "ld1rw	{ z0.s }, p0/z, [%[pA], #80]            \n"
+     1158             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #84]            \n"
+     1159             
+     1160                     "fmla	z20.s, p0/m, z6.s, z2.s                 \n"
+     1161                     "fmla	z21.s, p0/m, z7.s, z2.s                 \n"
+     1162                     "fmla	z22.s, p0/m, z6.s, z3.s                 \n"
+     1163                     "fmla	z23.s, p0/m, z7.s, z3.s                 \n"
+     1164             
+     1165                     "ld1rw	{ z2.s }, p0/z, [%[pA], #88]            \n"
+     1166             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #92]            \n"
+     1167             
+     1168                     "add	%[pA], %[pA], #96                       \n"
+     1169             
+     1170                     "fmla	z24.s, p0/m, z6.s, z0.s                 \n"
+     1171                     "fmla	z25.s, p0/m, z7.s, z0.s                 \n"
+     1172                     "fmla	z26.s, p0/m, z6.s, z1.s                 \n"
+     1173                     "fmla	z27.s, p0/m, z7.s, z1.s                 \n"
+     1174             
+     1175                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+     1176             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+     1177             
+     1178                     "fmla	z28.s, p0/m, z6.s, z2.s                 \n"
+     1179                     "fmla	z29.s, p0/m, z7.s, z2.s                 \n"
+     1180                     "fmla	z30.s, p0/m, z6.s, z3.s                 \n"
+     1181                     "fmla	z31.s, p0/m, z7.s, z3.s                 \n"
+     1182             
+     1183                     "subs   x6, x6, #1                              \n"
+     1184                     "b.ne   0b                                      \n"
+     1185             
+     1186                     
+     1187                     "st1w	{ z8.s },  p0, [%[pC0]]      \n"  // store C
+     1188                     "st1w	{ z9.s },  p0, [%[pC0], x4, lsl #2]    \n"
+     1189                     "st1w	{ z10.s }, p0, [%[pC1]]      \n"
+     1190                     "st1w	{ z11.s }, p0, [%[pC1], x4, lsl #2]    \n"
+     1191                     "st1w	{ z12.s }, p0, [%[pC2]]      \n"
+     1192                     "st1w	{ z13.s }, p0, [%[pC2], x4, lsl #2]    \n"
+     1193                     "st1w	{ z14.s }, p0, [%[pC3]]      \n"
+     1194                     "st1w	{ z15.s }, p0, [%[pC3], x4, lsl #2]    \n"
+     1195                     "st1w	{ z16.s }, p0, [%[pC4]]      \n"
+     1196                     "st1w	{ z17.s }, p0, [%[pC4], x4, lsl #2]    \n"
+     1197                     "st1w	{ z18.s }, p0, [%[pC5]]      \n"
+     1198                     "st1w	{ z19.s }, p0, [%[pC5], x4, lsl #2]    \n"
+     1199                     "st1w	{ z20.s }, p0, [%[pC6]]      \n"
+     1200                     "st1w	{ z21.s }, p0, [%[pC6], x4, lsl #2]    \n"
+     1201                     "st1w	{ z22.s }, p0, [%[pC7]]      \n"
+     1202                     "st1w	{ z23.s }, p0, [%[pC7], x4, lsl #2]    \n"
+     1203                     "st1w	{ z24.s }, p0, [%[pC8]]      \n"
+     1204                     "st1w	{ z25.s }, p0, [%[pC8], x4, lsl #2]    \n"
+     1205                     "st1w	{ z26.s }, p0, [%[pC9]]      \n"
+     1206                     "st1w	{ z27.s }, p0, [%[pC9], x4, lsl #2]    \n"
+     1207                     "st1w	{ z28.s }, p0, [%[pC10]]     \n"
+     1208                     "st1w	{ z29.s }, p0, [%[pC10], x4, lsl #2]    \n"
+     1209                     "st1w	{ z30.s }, p0, [%[pC11]]     \n"
+     1210                     "st1w	{ z31.s }, p0, [%[pC11], x4, lsl #2]    \n"
+     1211             
+     1212             
+     1213                 "1:                                                 \n"
+     1214                     
+     1215                 : [pA]"=&r"(packAPtr),     // %0
+     1216                   [pB]"=&r"(packBPtr)      // %1
+     1217                 : "[pA]"   (packAPtr),
+     1218                   "[pB]"   (packBPtr), 
+     1219                   [pC0] "r"(packCPtr0),    // %2
+     1220                   [pC1] "r"(packCPtr1),    // %2
+     1221                   [pC2] "r"(packCPtr2),    // %3
+     1222                   [pC3] "r"(packCPtr3),    // %3
+     1223                   [pC4] "r"(packCPtr4),    // %4
+     1224                   [pC5] "r"(packCPtr5),    // %4
+     1225                   [pC6] "r"(packCPtr6),    // %5
+     1226                   [pC7] "r"(packCPtr7),    // %5
+     1227                   [pC8] "r"(packCPtr8),    // %6
+     1228                   [pC9] "r"(packCPtr9),    // %6
+     1229                   [pC10]"r"(packCPtr10),   // %7
+     1230                   [pC11]"r"(packCPtr11),   // %7
+     1231                   [ldc] "r"(ldc),
+     1232                   [kc]  "r"(kc_adjust),
+     1233                   [preA]"r"(PREFETCH_A),
+     1234                   [preB]"r"(PREFETCH_B),
+     1235                   [preC]"r"(PREFETCH_C)
+     1236                 : "memory", "cc", "p0", "x4", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+     1237                   "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+     1238                   "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+     1239             
+     1240             #else
+     1241                 float* packCPtr0  = packC;
+     1242                 float* packCPtr1  = packC + 1  * ldc;
+     1243                 float* packCPtr2  = packC + 2  * ldc;
+     1244                 float* packCPtr3  = packC + 3  * ldc;
+     1245                 float* packCPtr4  = packC + 4  * ldc;
+     1246                 float* packCPtr5  = packC + 5  * ldc;
+     1247                 float* packCPtr6  = packC + 6  * ldc;
+     1248                 float* packCPtr7  = packC + 7  * ldc;
+     1249                 float* packCPtr8  = packC + 8  * ldc;
+     1250                 float* packCPtr9  = packC + 9  * ldc;
+     1251                 float* packCPtr10 = packC + 10 * ldc;
+     1252                 float* packCPtr11 = packC + 11 * ldc;
+     1253             
+     1254                 const svbool_t p32_all = svptrue_b32();
+     1255             
+     1256                 svfloat32_t va0,   va1, va2, va3;
+     1257                 svfloat32_t vb4,   vb5, vb6, vb7;
+     1258                 svfloat32_t vc00,  vc01;
+     1259                 svfloat32_t vc10,  vc11;
+     1260                 svfloat32_t vc20,  vc21;
+     1261                 svfloat32_t vc30,  vc31;
+     1262                 svfloat32_t vc40,  vc41;
+     1263                 svfloat32_t vc50,  vc51;
+     1264                 svfloat32_t vc60,  vc61;
+     1265                 svfloat32_t vc70,  vc71;
+     1266                 svfloat32_t vc80,  vc81;
+     1267                 svfloat32_t vc90,  vc91;
+     1268                 svfloat32_t vc100, vc101;
+     1269                 svfloat32_t vc110, vc111;
+     1270             
+     1271                 vc00  = svld1_f32(p32_all, packCPtr0);
+     1272                 vc01  = svld1_f32(p32_all, packCPtr0 + 16);
+     1273                 vc10  = svld1_f32(p32_all, packCPtr1);
+     1274                 vc11  = svld1_f32(p32_all, packCPtr1 + 16);
+     1275                 vc20  = svld1_f32(p32_all, packCPtr2);
+     1276                 vc21  = svld1_f32(p32_all, packCPtr2 + 16);
+     1277                 vc30  = svld1_f32(p32_all, packCPtr3);
+     1278                 vc31  = svld1_f32(p32_all, packCPtr3 + 16);
+     1279                 vc40  = svld1_f32(p32_all, packCPtr4);
+     1280                 vc41  = svld1_f32(p32_all, packCPtr4 + 16);
+     1281                 vc50  = svld1_f32(p32_all, packCPtr5);
+     1282                 vc51  = svld1_f32(p32_all, packCPtr5 + 16);
+     1283                 vc60  = svld1_f32(p32_all, packCPtr6);
+     1284                 vc61  = svld1_f32(p32_all, packCPtr6 + 16);
+     1285                 vc70  = svld1_f32(p32_all, packCPtr7);
+     1286                 vc71  = svld1_f32(p32_all, packCPtr7 + 16);
+     1287                 vc80  = svld1_f32(p32_all, packCPtr8);
+     1288                 vc81  = svld1_f32(p32_all, packCPtr8 + 16);
+     1289                 vc90  = svld1_f32(p32_all, packCPtr9);
+     1290                 vc91  = svld1_f32(p32_all, packCPtr9 + 16);
+     1291                 vc100 = svld1_f32(p32_all, packCPtr10);
+     1292                 vc101 = svld1_f32(p32_all, packCPtr10 + 16);
+     1293                 vc110 = svld1_f32(p32_all, packCPtr11);
+     1294                 vc111 = svld1_f32(p32_all, packCPtr11 + 16);
+     1295             
+     1296                 va0 = svdup_n_f32(packAPtr[0]);
+     1297                 va1 = svdup_n_f32(packAPtr[1]);
+     1298             
+     1299                 vb4 = svld1_f32(p32_all, packBPtr);
+     1300                 vb5 = svld1_f32(p32_all, packBPtr + 16);
+     1301             
+     1302                 // 计算
+     1303                 for (int k = 0; k < kc_adjust; k += 2) {
+     1304                     va2 = svdup_n_f32(packAPtr[2]);
+     1305                     va3 = svdup_n_f32(packAPtr[3]);
+     1306             
+     1307                     vb6 = svld1_f32(p32_all, packBPtr + 32);
+     1308                     vb7 = svld1_f32(p32_all, packBPtr + 48); 
+     1309             
+     1310                     vc00 = svmla_f32_x(p32_all, vc00, va0, vb4); 
+     1311                     vc01 = svmla_f32_x(p32_all, vc01, va0, vb5); 
+     1312                     vc10 = svmla_f32_x(p32_all, vc10, va1, vb4); 
+     1313                     vc11 = svmla_f32_x(p32_all, vc11, va1, vb5); 
+     1314             
+     1315                     va0 = svdup_n_f32(packAPtr[4]);
+     1316                     va1 = svdup_n_f32(packAPtr[5]);
+     1317                     
+     1318                     vc20 = svmla_f32_x(p32_all, vc20, va2, vb4); 
+     1319                     vc21 = svmla_f32_x(p32_all, vc21, va2, vb5); 
+     1320                     vc30 = svmla_f32_x(p32_all, vc30, va3, vb4); 
+     1321                     vc31 = svmla_f32_x(p32_all, vc31, va3, vb5); 
+     1322                     
+     1323                     va2 = svdup_n_f32(packAPtr[6]);
+     1324                     va3 = svdup_n_f32(packAPtr[7]);
+     1325             
+     1326                     vc40 = svmla_f32_x(p32_all, vc40, va0, vb4); 
+     1327                     vc41 = svmla_f32_x(p32_all, vc41, va0, vb5); 
+     1328                     vc50 = svmla_f32_x(p32_all, vc50, va1, vb4); 
+     1329                     vc51 = svmla_f32_x(p32_all, vc51, va1, vb5); 
+     1330             
+     1331                     va0 = svdup_n_f32(packAPtr[8]);
+     1332                     va1 = svdup_n_f32(packAPtr[9]);
+     1333             
+     1334                     vc60 = svmla_f32_x(p32_all, vc60, va2, vb4); 
+     1335                     vc61 = svmla_f32_x(p32_all, vc61, va3, vb5); 
+     1336                     vc70 = svmla_f32_x(p32_all, vc70, va2, vb4); 
+     1337                     vc71 = svmla_f32_x(p32_all, vc71, va3, vb5); 
+     1338             
+     1339                     va2 = svdup_n_f32(packAPtr[10]);
+     1340                     va3 = svdup_n_f32(packAPtr[11]);
+     1341             
+     1342                     packBPtr += 64;
+     1343             
+     1344                     vc80 = svmla_f32_x(p32_all, vc80, va0, vb4); 
+     1345                     vc81 = svmla_f32_x(p32_all, vc81, va0, vb5); 
+     1346                     vc90 = svmla_f32_x(p32_all, vc90, va1, vb4); 
+     1347                     vc91 = svmla_f32_x(p32_all, vc91, va1, vb5); 
+     1348             
+     1349                     va0 = svdup_n_f32(packAPtr[12]);
+     1350                     va1 = svdup_n_f32(packAPtr[13]);
+     1351             
+     1352                     vc100 = svmla_f32_x(p32_all, vc100, va2, vb4); 
+     1353                     vc101 = svmla_f32_x(p32_all, vc101, va3, vb5); 
+     1354                     vc110 = svmla_f32_x(p32_all, vc110, va2, vb4); 
+     1355                     vc111 = svmla_f32_x(p32_all, vc111, va3, vb5);
+     1356             
+     1357                     // ----------loop 2--------------
+     1358                     vb4 = svld1_f32(p32_all, packBPtr);
+     1359                     vb5 = svld1_f32(p32_all, packBPtr + 16); 
+     1360                     
+     1361                     va2 = svdup_n_f32(packAPtr[14]);
+     1362                     va3 = svdup_n_f32(packAPtr[15]);
+     1363             
+     1364                     vc00 = svmla_f32_x(p32_all, vc00, va0, vb6); 
+     1365                     vc01 = svmla_f32_x(p32_all, vc01, va0, vb7); 
+     1366                     vc10 = svmla_f32_x(p32_all, vc10, va1, vb6); 
+     1367                     vc11 = svmla_f32_x(p32_all, vc11, va1, vb7); 
+     1368             
+     1369                     va0 = svdup_n_f32(packAPtr[16]);
+     1370                     va1 = svdup_n_f32(packAPtr[17]);
+     1371                     
+     1372                     vc20 = svmla_f32_x(p32_all, vc20, va2, vb6); 
+     1373                     vc21 = svmla_f32_x(p32_all, vc21, va2, vb7); 
+     1374                     vc30 = svmla_f32_x(p32_all, vc30, va3, vb6); 
+     1375                     vc31 = svmla_f32_x(p32_all, vc31, va3, vb7); 
+     1376                     
+     1377                     va2 = svdup_n_f32(packAPtr[18]);
+     1378                     va3 = svdup_n_f32(packAPtr[19]);
+     1379             
+     1380                     vc40 = svmla_f32_x(p32_all, vc40, va0, vb6); 
+     1381                     vc41 = svmla_f32_x(p32_all, vc41, va0, vb7); 
+     1382                     vc50 = svmla_f32_x(p32_all, vc50, va1, vb6); 
+     1383                     vc51 = svmla_f32_x(p32_all, vc51, va1, vb7); 
+     1384             
+     1385                     va0 = svdup_n_f32(packAPtr[20]);
+     1386                     va1 = svdup_n_f32(packAPtr[21]);
+     1387             
+     1388                     vc60 = svmla_f32_x(p32_all, vc60, va2, vb6); 
+     1389                     vc61 = svmla_f32_x(p32_all, vc61, va3, vb7); 
+     1390                     vc70 = svmla_f32_x(p32_all, vc70, va2, vb6); 
+     1391                     vc71 = svmla_f32_x(p32_all, vc71, va3, vb7); 
+     1392             
+     1393                     va2 = svdup_n_f32(packAPtr[22]);
+     1394                     va3 = svdup_n_f32(packAPtr[23]);
+     1395             
+     1396                     vc80 = svmla_f32_x(p32_all, vc80, va0, vb6); 
+     1397                     vc81 = svmla_f32_x(p32_all, vc81, va0, vb7); 
+     1398                     vc90 = svmla_f32_x(p32_all, vc90, va1, vb6); 
+     1399                     vc91 = svmla_f32_x(p32_all, vc91, va1, vb7); 
+     1400             
+     1401                     packAPtr += 24;
+     1402             
+     1403                     va0 = svdup_n_f32(packAPtr[0]);
+     1404                     va1 = svdup_n_f32(packAPtr[1]);
+     1405             
+     1406                     vc100 = svmla_f32_x(p32_all, vc100, va2, vb6); 
+     1407                     vc101 = svmla_f32_x(p32_all, vc101, va3, vb7); 
+     1408                     vc110 = svmla_f32_x(p32_all, vc110, va2, vb6); 
+     1409                     vc111 = svmla_f32_x(p32_all, vc111, va3, vb7);
+     1410             
+     1411                 }
+     1412             
+     1413                 // 将结果写回
+     1414                 svst1_f32(p32_all, packCPtr0, vc00);
+     1415                 svst1_f32(p32_all, packCPtr0 + 16, vc01);
+     1416                 svst1_f32(p32_all, packCPtr1, vc10);
+     1417                 svst1_f32(p32_all, packCPtr1 + 16, vc11);
+     1418                 svst1_f32(p32_all, packCPtr2, vc20);
+     1419                 svst1_f32(p32_all, packCPtr2 + 16, vc21);
+     1420                 svst1_f32(p32_all, packCPtr3, vc30);
+     1421                 svst1_f32(p32_all, packCPtr3 + 16, vc31);
+     1422                 svst1_f32(p32_all, packCPtr4, vc40);
+     1423                 svst1_f32(p32_all, packCPtr4 + 16, vc41);
+     1424                 svst1_f32(p32_all, packCPtr5, vc50);
+     1425                 svst1_f32(p32_all, packCPtr5 + 16, vc51);
+     1426                 svst1_f32(p32_all, packCPtr6, vc60);
+     1427                 svst1_f32(p32_all, packCPtr6 + 16, vc61);
+     1428                 svst1_f32(p32_all, packCPtr7, vc70);
+     1429                 svst1_f32(p32_all, packCPtr7 + 16, vc71);
+     1430                 svst1_f32(p32_all, packCPtr8, vc80);
+     1431                 svst1_f32(p32_all, packCPtr8 + 16, vc81);
+     1432                 svst1_f32(p32_all, packCPtr9, vc90);
+     1433                 svst1_f32(p32_all, packCPtr9 + 16, vc91);
+     1434                 svst1_f32(p32_all, packCPtr10, vc100);
+     1435                 svst1_f32(p32_all, packCPtr10 + 16, vc101);
+     1436                 svst1_f32(p32_all, packCPtr11, vc110);
+     1437                 svst1_f32(p32_all, packCPtr11 + 16, vc111);
+     1438             
+     1439             
+     1440             #endif
+     1441             }
+     1442             
+     1443             // new version, use broadcast and fmla and loop unroll by 2
+     1444             void kernel_8x32_v1(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
+     1445             
+     1446                 float* packAPtr = packA;
+     1447                 float* packBPtr = packB;
+     1448                 float* packCPtr = packC;
+     1449             
+     1450             #ifdef _ASM_
+     1451             
+     1452                 float* packCPtr0  = packC;
+     1453                 float* packCPtr1  = packC + 1  * ldc;
+     1454                 float* packCPtr2  = packC + 2  * ldc;
+     1455                 float* packCPtr3  = packC + 3  * ldc;
+     1456                 float* packCPtr4  = packC + 4  * ldc;
+     1457                 float* packCPtr5  = packC + 5  * ldc;
+     1458                 float* packCPtr6  = packC + 6  * ldc;
+     1459                 float* packCPtr7  = packC + 7  * ldc;
+     1460             
+     1461                 asm volatile(
+     1462                     "ptrue  p0.s  \n"
+     1463                     "mov    x4, #16 \n"
+     1464                     "mov    x5, %[kc]    \n"
+     1465                     "lsr    x6, x5, 0x1  \n"
+     1466             
+     1467                     "cmp    w5, #0  \n"
+     1468                     "b.eq    1f     \n"
+     1469             
+     1470                     
+     1471                     "ld1w	{ z16.s }, p0/z, [%[pC0]]      \n"
+     1472                     "ld1w	{ z17.s }, p0/z, [%[pC0], x4, lsl #2]    \n"
+     1473                     "ld1w	{ z18.s }, p0/z, [%[pC1]]      \n"
+     1474                     "ld1w	{ z19.s }, p0/z, [%[pC1], x4, lsl #2]    \n"
+     1475                     "ld1w	{ z20.s }, p0/z, [%[pC2]]      \n"
+     1476                     "ld1w	{ z21.s }, p0/z, [%[pC2], x4, lsl #2]    \n"
+     1477                     "ld1w	{ z22.s }, p0/z, [%[pC3]]      \n"
+     1478                     "ld1w	{ z23.s }, p0/z, [%[pC3], x4, lsl #2]    \n"
+     1479                     "ld1w	{ z24.s }, p0/z, [%[pC4]]      \n"
+     1480                     "ld1w	{ z25.s }, p0/z, [%[pC4], x4, lsl #2]    \n"
+     1481                     "ld1w	{ z26.s }, p0/z, [%[pC5]]      \n"
+     1482                     "ld1w	{ z27.s }, p0/z, [%[pC5], x4, lsl #2]    \n"
+     1483                     "ld1w	{ z28.s }, p0/z, [%[pC6]]     \n"
+     1484                     "ld1w	{ z29.s }, p0/z, [%[pC6], x4, lsl #2]    \n"
+     1485                     "ld1w	{ z30.s }, p0/z, [%[pC7]]     \n"
+     1486                     "ld1w	{ z31.s }, p0/z, [%[pC7], x4, lsl #2]    \n"
+     1487             
+     1488             
+     1489                     "ld1w	{ z12.s }, p0/z, [%[pB]]                 \n"
+     1490             	    "ld1w	{ z13.s }, p0/z, [%[pB], #1, MUL VL]     \n"
+     1491             
+     1492                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+     1493             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+     1494             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #8]             \n"
+     1495             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #12]            \n"
+     1496                     "ld1rw	{ z4.s }, p0/z, [%[pA], #16]            \n"
+     1497             	    "ld1rw	{ z5.s }, p0/z, [%[pA], #20]            \n"
+     1498             	    "ld1rw	{ z6.s }, p0/z, [%[pA], #24]            \n"
+     1499             	    "ld1rw	{ z7.s }, p0/z, [%[pA], #28]            \n"
+     1500             
+     1501                 "0:                                                 \n"
+     1502                     // ------------- loop 1 -------------
+     1503             	    "ld1w	{ z14.s }, p0/z, [%[pB], #2, MUL VL]    \n"
+     1504             	    "ld1w	{ z15.s }, p0/z, [%[pB], #3, MUL VL]    \n"
+     1505             
+     1506                     "prfm	pldl1keep, [%[pA], #256]                \n"
+     1507             
+     1508                     "fmla	z16.s, p0/m, z12.s, z0.s                 \n"
+     1509                     "fmla	z17.s, p0/m, z13.s, z0.s                 \n"
+     1510                     "fmla	z18.s, p0/m, z12.s, z1.s                 \n"
+     1511                     "fmla	z19.s, p0/m, z13.s, z1.s                 \n" 
+     1512                     
+     1513                     "fmla	z20.s, p0/m, z12.s, z2.s                 \n"
+     1514                     "fmla	z21.s, p0/m, z13.s, z2.s                 \n"
+     1515                     "fmla	z22.s, p0/m, z12.s, z3.s                 \n"
+     1516                     "fmla	z23.s, p0/m, z13.s, z3.s                 \n"
+     1517             
+     1518                     "ld1rw	{ z0.s }, p0/z, [%[pA], #32]            \n"
+     1519             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #36]            \n"
+     1520             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #40]            \n"
+     1521             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #44]            \n"
+     1522                     "ld1rw	{ z8.s },  p0/z, [%[pA], #48]            \n"
+     1523             	    "ld1rw	{ z9.s },  p0/z, [%[pA], #52]            \n"
+     1524                     "ld1rw	{ z10.s }, p0/z, [%[pA], #56]            \n"
+     1525             	    "ld1rw	{ z11.s }, p0/z, [%[pA], #60]            \n"
+     1526             
+     1527                     "fmla	z24.s, p0/m, z12.s, z4.s                 \n"
+     1528                     "fmla	z25.s, p0/m, z13.s, z4.s                 \n"
+     1529                     "fmla	z26.s, p0/m, z12.s, z5.s                 \n"
+     1530                     "fmla	z27.s, p0/m, z13.s, z5.s                 \n"
+     1531             
+     1532                     "add	%[pB], %[pB], #256                      \n"
+     1533             
+     1534                     "fmla	z28.s, p0/m, z12.s, z6.s                 \n"
+     1535                     "fmla	z29.s, p0/m, z13.s, z6.s                 \n"
+     1536                     "fmla	z30.s, p0/m, z12.s, z7.s                 \n"
+     1537                     "fmla	z31.s, p0/m, z13.s, z7.s                 \n"
+     1538             
+     1539                     // -------------- loop 2 -----------------
+     1540                     "ld1w	{ z12.s },  p0/z, [%[pB]]                \n"
+     1541             	    "ld1w	{ z13.s },  p0/z, [%[pB], #1, MUL VL]    \n"
+     1542             
+     1543                     "prfm	pldl1keep, [%[pA], #512]                \n"
+     1544             
+     1545                     "fmla	z16.s, p0/m, z14.s, z0.s                 \n"
+     1546                     "fmla	z17.s, p0/m, z15.s, z0.s                 \n"
+     1547                     "fmla	z18.s, p0/m, z14.s, z1.s                 \n"
+     1548                     "fmla	z19.s, p0/m, z15.s, z1.s                 \n"
+     1549             
+     1550                     "add	%[pA], %[pA], #64                       \n"
+     1551                     
+     1552                     "fmla	z20.s, p0/m, z14.s, z2.s                 \n"
+     1553                     "fmla	z21.s, p0/m, z15.s, z2.s                 \n"
+     1554                     "fmla	z22.s, p0/m, z14.s, z3.s                 \n"
+     1555                     "fmla	z23.s, p0/m, z15.s, z3.s                 \n"
+     1556             
+     1557                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+     1558             	    "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+     1559             	    "ld1rw	{ z2.s }, p0/z, [%[pA], #8]             \n"
+     1560             	    "ld1rw	{ z3.s }, p0/z, [%[pA], #12]            \n"
+     1561                     "ld1rw	{ z4.s }, p0/z, [%[pA], #16]            \n"
+     1562             	    "ld1rw	{ z5.s }, p0/z, [%[pA], #20]            \n"
+     1563             	    "ld1rw	{ z6.s }, p0/z, [%[pA], #24]            \n"
+     1564             	    "ld1rw	{ z7.s }, p0/z, [%[pA], #28]            \n"
+     1565             
+     1566                     "fmla	z24.s, p0/m, z14.s, z8.s                 \n"
+     1567                     "fmla	z25.s, p0/m, z15.s, z8.s                 \n"
+     1568                     "fmla	z26.s, p0/m, z14.s, z9.s                 \n"
+     1569                     "fmla	z27.s, p0/m, z15.s, z9.s                 \n"
+     1570             
+     1571                     "fmla	z28.s, p0/m, z14.s, z10.s                \n"
+     1572                     "fmla	z29.s, p0/m, z15.s, z10.s                \n"
+     1573                     "fmla	z30.s, p0/m, z14.s, z11.s                \n"
+     1574                     "fmla	z31.s, p0/m, z15.s, z11.s                \n"
+     1575             
+     1576                     "subs   x6, x6, #1                              \n"
+     1577                     "b.ne   0b                                      \n"
+     1578             
+     1579                     "st1w	{ z16.s }, p0, [%[pC0]]      \n"
+     1580                     "st1w	{ z17.s }, p0, [%[pC0], x4, lsl #2]    \n"
+     1581                     "st1w	{ z18.s }, p0, [%[pC1]]      \n"
+     1582                     "st1w	{ z19.s }, p0, [%[pC1], x4, lsl #2]    \n"
+     1583                     "st1w	{ z20.s }, p0, [%[pC2]]      \n"
+     1584                     "st1w	{ z21.s }, p0, [%[pC2], x4, lsl #2]    \n"
+     1585                     "st1w	{ z22.s }, p0, [%[pC3]]      \n"
+     1586                     "st1w	{ z23.s }, p0, [%[pC3], x4, lsl #2]    \n"
+     1587                     "st1w	{ z24.s }, p0, [%[pC4]]      \n"
+     1588                     "st1w	{ z25.s }, p0, [%[pC4], x4, lsl #2]    \n"
+     1589                     "st1w	{ z26.s }, p0, [%[pC5]]      \n"
+     1590                     "st1w	{ z27.s }, p0, [%[pC5], x4, lsl #2]    \n"
+     1591                     "st1w	{ z28.s }, p0, [%[pC6]]     \n"
+     1592                     "st1w	{ z29.s }, p0, [%[pC6], x4, lsl #2]    \n"
+     1593                     "st1w	{ z30.s }, p0, [%[pC7]]     \n"
+     1594                     "st1w	{ z31.s }, p0, [%[pC7], x4, lsl #2]    \n"
+     1595             
+     1596             
+     1597                 "1:                                                 \n"
+     1598                     
+     1599                 : [pA]"=&r"(packAPtr),     // %0
+     1600                   [pB]"=&r"(packBPtr)      // %1
+     1601                 : "[pA]"   (packAPtr),
+     1602                   "[pB]"   (packBPtr), 
+     1603                   [pC0] "r"(packCPtr0),    // %2
+     1604                   [pC1] "r"(packCPtr1),    // %2
+     1605                   [pC2] "r"(packCPtr2),    // %3
+     1606                   [pC3] "r"(packCPtr3),    // %3
+     1607                   [pC4] "r"(packCPtr4),    // %4
+     1608                   [pC5] "r"(packCPtr5),    // %4
+     1609                   [pC6] "r"(packCPtr6),    // %5
+     1610                   [pC7] "r"(packCPtr7),    // %5
+     1611                   [ldc] "r"(ldc),
+     1612                   [kc]  "r"(kc_adjust),
+     1613                   [preA]"r"(PREFETCH_A),
+     1614                   [preB]"r"(PREFETCH_B),
+     1615                   [preC]"r"(PREFETCH_C)
+     1616                 : "memory", "cc", "p0", "x4", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+     1617                   "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+     1618                   "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+     1619             #endif
+     1620             }
+     1621             
+     1622             
+     1623             
+     1624             // new version, use broadcast and fmla
+     1625             void kernel_14x32(int kc_adjust, float *packA, float* packB, float *packC, int ldc, const int PREFETCH_A, const int PREFETCH_B, const int PREFETCH_C) {
+     1626             
+     1627                 float* packAPtr = packA;
+     1628                 float* packBPtr = packB;
+     1629                 float* packCPtr = packC;
+     1630             
+     1631             #ifdef _ASM_
+     1632             
+     1633                 float* packCPtr0  = packC;
+     1634                 float* packCPtr1  = packC + 1  * ldc;
+     1635                 float* packCPtr2  = packC + 2  * ldc;
+     1636                 float* packCPtr3  = packC + 3  * ldc;
+     1637                 float* packCPtr4  = packC + 4  * ldc;
+     1638                 float* packCPtr5  = packC + 5  * ldc;
+     1639                 float* packCPtr6  = packC + 6  * ldc;
+     1640                 float* packCPtr7  = packC + 7  * ldc;
+     1641                 float* packCPtr8  = packC + 8  * ldc;
+     1642                 float* packCPtr9  = packC + 9  * ldc;
+     1643                 float* packCPtr10 = packC + 10 * ldc;
+     1644                 float* packCPtr11 = packC + 11 * ldc;
+     1645                 float* packCPtr12 = packC + 12 * ldc;
+     1646                 float* packCPtr13 = packC + 13 * ldc;
+     1647             
+     1648                 asm volatile(
+     1649                     "ptrue  p0.s  \n"
+     1650                     "mov    x4, #16 \n"
+     1651                     "mov    x5, %[kc]    \n"
+     1652             
+     1653                     "cmp    w5, #0  \n"
+     1654                     "b.eq    1f     \n"
+     1655             
+     1656                     "ld1w	{ z4.s },  p0/z, [%[pC0]]      \n"  // load C
+     1657                     "ld1w	{ z5.s },  p0/z, [%[pC0], x4, lsl #2]    \n"
+     1658                     "ld1w	{ z6.s },  p0/z, [%[pC1]]      \n"
+     1659                     "ld1w	{ z7.s },  p0/z, [%[pC1], x4, lsl #2]    \n"
+     1660                     "ld1w	{ z8.s },  p0/z, [%[pC2]]      \n"
+     1661                     "ld1w	{ z9.s },  p0/z, [%[pC2], x4, lsl #2]    \n"
+     1662                     "ld1w	{ z10.s }, p0/z, [%[pC3]]      \n"
+     1663                     "ld1w	{ z11.s }, p0/z, [%[pC3], x4, lsl #2]    \n"
+     1664                     "ld1w	{ z12.s }, p0/z, [%[pC4]]      \n"
+     1665                     "ld1w	{ z13.s }, p0/z, [%[pC4], x4, lsl #2]    \n"
+     1666                     "ld1w	{ z14.s }, p0/z, [%[pC5]]      \n"
+     1667                     "ld1w	{ z15.s }, p0/z, [%[pC5], x4, lsl #2]    \n"
+     1668                     "ld1w	{ z16.s }, p0/z, [%[pC6]]      \n"
+     1669                     "ld1w	{ z17.s }, p0/z, [%[pC6], x4, lsl #2]    \n"
+     1670                     "ld1w	{ z18.s }, p0/z, [%[pC7]]      \n"
+     1671                     "ld1w	{ z19.s }, p0/z, [%[pC7], x4, lsl #2]    \n"
+     1672                     "ld1w	{ z20.s }, p0/z, [%[pC8]]      \n"
+     1673                     "ld1w	{ z21.s }, p0/z, [%[pC8], x4, lsl #2]    \n"
+     1674                     "ld1w	{ z22.s }, p0/z, [%[pC9]]      \n"
+     1675                     "ld1w	{ z23.s }, p0/z, [%[pC9], x4, lsl #2]    \n"
+     1676                     "ld1w	{ z24.s }, p0/z, [%[pC10]]     \n"
+     1677                     "ld1w	{ z25.s }, p0/z, [%[pC10], x4, lsl #2]    \n"
+     1678                     "ld1w	{ z26.s }, p0/z, [%[pC11]]     \n"
+     1679                     "ld1w	{ z27.s }, p0/z, [%[pC11], x4, lsl #2]    \n"
+     1680                     "ld1w	{ z28.s }, p0/z, [%[pC12]]     \n"
+     1681                     "ld1w	{ z29.s }, p0/z, [%[pC12], x4, lsl #2]    \n"
+     1682                     "ld1w	{ z30.s }, p0/z, [%[pC13]]     \n"
+     1683                     "ld1w	{ z31.s }, p0/z, [%[pC13], x4, lsl #2]    \n"
+     1684             
+     1685                 "0:                                                 \n"
+     1686             	
+     1687                     "prfm	pldl1keep, [%[pA], #256]                \n"
+     1688                     "ld1rw	{ z0.s }, p0/z, [%[pA]]                 \n"
+     1689                     "ld1rw	{ z1.s }, p0/z, [%[pA], #4]             \n"
+     1690             
+     1691                     "ld1w	{ z2.s }, p0/z, [%[pB]]                 \n"
+     1692             	    "ld1w	{ z3.s }, p0/z, [%[pB], x4, lsl #2]     \n"
+     1693             
+     1694                     "fmla	z4.s,  p0/m, z2.s, z0.s                 \n"
+     1695                     "fmla	z5.s,  p0/m, z3.s, z0.s                 \n"
+     1696             
+     1697                     "fmla	z6.s,  p0/m, z2.s, z1.s                 \n"
+     1698                     "fmla	z7.s,  p0/m, z3.s, z1.s                 \n"
+     1699             
+     1700                     "ld1rw	{ z0.s }, p0/z, [%[pA], #8]             \n"
+     1701                     "ld1rw	{ z1.s }, p0/z, [%[pA], #12]            \n"
+     1702             
+     1703                     "fmla	z8.s,  p0/m, z2.s, z0.s                 \n"
+     1704                     "fmla	z9.s,  p0/m, z3.s, z0.s                 \n"
+     1705             
+     1706                     "fmla	z10.s, p0/m, z2.s, z1.s                 \n"
+     1707                     "fmla	z11.s, p0/m, z3.s, z1.s                 \n"
+     1708             
+     1709                     "prfm	pldl1keep, [%[pA], #512]                \n"
+     1710                     "ld1rw	{ z0.s }, p0/z, [%[pA], #16]            \n"
+     1711                     "ld1rw	{ z1.s }, p0/z, [%[pA], #20]            \n"
+     1712             
+     1713                     "fmla	z12.s, p0/m, z2.s, z0.s                 \n"
+     1714                     "fmla	z13.s, p0/m, z3.s, z0.s                 \n"
+     1715             
+     1716                     "fmla	z14.s, p0/m, z2.s, z1.s                 \n"
+     1717                     "fmla	z15.s, p0/m, z3.s, z1.s                 \n"
+     1718             
+     1719                     "ld1rw	{ z0.s }, p0/z, [%[pA], #24]            \n"
+     1720                     "ld1rw	{ z1.s }, p0/z, [%[pA], #28]            \n"
+     1721                     
+     1722                     "fmla	z16.s, p0/m, z2.s, z0.s                 \n"
+     1723                     "fmla	z17.s, p0/m, z3.s, z0.s                 \n"
+     1724             
+     1725                     "fmla	z18.s, p0/m, z2.s, z1.s                 \n"
+     1726                     "fmla	z19.s, p0/m, z3.s, z1.s                 \n"
+     1727             
+     1728                     "prfm	pldl1keep, [%[pA], #768]                \n"
+     1729                     "ld1rw	{ z0.s }, p0/z, [%[pA], #32]            \n"
+     1730                     "ld1rw	{ z1.s }, p0/z, [%[pA], #36]            \n"
+     1731             
+     1732                     "fmla	z20.s, p0/m, z2.s, z0.s                 \n"
+     1733                     "fmla	z21.s, p0/m, z3.s, z0.s                 \n"
+     1734                     
+     1735                     "fmla	z22.s, p0/m, z2.s, z1.s                 \n"
+     1736                     "fmla	z23.s, p0/m, z3.s, z1.s                 \n"
+     1737             
+     1738                     "ld1rw	{ z0.s }, p0/z, [%[pA], #40]            \n"
+     1739                     "ld1rw	{ z1.s }, p0/z, [%[pA], #44]            \n"
+     1740             
+     1741                     "fmla	z24.s, p0/m, z2.s, z0.s                 \n"
+     1742                     "fmla	z25.s, p0/m, z3.s, z0.s                 \n"
+     1743             
+     1744                     "fmla	z26.s, p0/m, z2.s, z1.s                 \n"
+     1745                     "fmla	z27.s, p0/m, z3.s, z1.s                 \n"
+     1746             
+     1747                     "prfm	pldl1keep, [%[pA], #1024]                \n"
+     1748                     "ld1rw	{ z0.s }, p0/z, [%[pA], #48]            \n"
+     1749                     "ld1rw	{ z1.s }, p0/z, [%[pA], #52]            \n"
+     1750             
+     1751                     "fmla	z28.s, p0/m, z2.s, z0.s                 \n"
+     1752                     "fmla	z29.s, p0/m, z3.s, z0.s                 \n"
+     1753             
+     1754                     "add	%[pB], %[pB], #128                      \n"
+     1755                     "add	%[pA], %[pA], #56                       \n"
+     1756                     "subs   x5, x5, #1                              \n"
+     1757             
+     1758                     "fmla	z30.s, p0/m, z2.s, z1.s                 \n"
+     1759                     "fmla	z31.s, p0/m, z3.s, z1.s                 \n"
+     1760             
+     1761                     "b.ne   0b                                      \n"
+     1762                     
+     1763                     "st1w	{ z4.s },  p0, [%[pC0]]      \n"  // load C
+     1764                     "st1w	{ z5.s },  p0, [%[pC0], x4, lsl #2]    \n"
+     1765                     "st1w	{ z6.s },  p0, [%[pC1]]      \n"
+     1766                     "st1w	{ z7.s },  p0, [%[pC1], x4, lsl #2]    \n"
+     1767                     "st1w	{ z8.s },  p0, [%[pC2]]      \n"
+     1768                     "st1w	{ z9.s },  p0, [%[pC2], x4, lsl #2]    \n"
+     1769                     "st1w	{ z10.s }, p0, [%[pC3]]      \n"
+     1770                     "st1w	{ z11.s }, p0, [%[pC3], x4, lsl #2]    \n"
+     1771                     "st1w	{ z12.s }, p0, [%[pC4]]      \n"
+     1772                     "st1w	{ z13.s }, p0, [%[pC4], x4, lsl #2]    \n"
+     1773                     "st1w	{ z14.s }, p0, [%[pC5]]      \n"
+     1774                     "st1w	{ z15.s }, p0, [%[pC5], x4, lsl #2]    \n"
+     1775                     "st1w	{ z16.s }, p0, [%[pC6]]      \n"
+     1776                     "st1w	{ z17.s }, p0, [%[pC6], x4, lsl #2]    \n"
+     1777                     "st1w	{ z18.s }, p0, [%[pC7]]      \n"
+     1778                     "st1w	{ z19.s }, p0, [%[pC7], x4, lsl #2]    \n"
+     1779                     "st1w	{ z20.s }, p0, [%[pC8]]      \n"
+     1780                     "st1w	{ z21.s }, p0, [%[pC8], x4, lsl #2]    \n"
+     1781                     "st1w	{ z22.s }, p0, [%[pC9]]      \n"
+     1782                     "st1w	{ z23.s }, p0, [%[pC9], x4, lsl #2]    \n"
+     1783                     "st1w	{ z24.s }, p0, [%[pC10]]     \n"
+     1784                     "st1w	{ z25.s }, p0, [%[pC10], x4, lsl #2]    \n"
+     1785                     "st1w	{ z26.s }, p0, [%[pC11]]     \n"
+     1786                     "st1w	{ z27.s }, p0, [%[pC11], x4, lsl #2]    \n"
+     1787                     "st1w	{ z28.s }, p0, [%[pC12]]     \n"
+     1788                     "st1w	{ z29.s }, p0, [%[pC12], x4, lsl #2]    \n"
+     1789                     "st1w	{ z30.s }, p0, [%[pC13]]     \n"
+     1790                     "st1w	{ z31.s }, p0, [%[pC13], x4, lsl #2]    \n"
+     1791             
+     1792                 "1:                                                 \n"
+     1793                     
+     1794                 : [pA]"=&r"(packAPtr),     // %0
+     1795                   [pB]"=&r"(packBPtr)      // %1
+     1796                 : "[pA]"   (packAPtr),
+     1797                   "[pB]"   (packBPtr), 
+     1798                   [pC0] "r"(packCPtr0),    // %2
+     1799                   [pC1] "r"(packCPtr1),    // %2
+     1800                   [pC2] "r"(packCPtr2),    // %3
+     1801                   [pC3] "r"(packCPtr3),    // %3
+     1802                   [pC4] "r"(packCPtr4),    // %4
+     1803                   [pC5] "r"(packCPtr5),    // %4
+     1804                   [pC6] "r"(packCPtr6),    // %5
+     1805                   [pC7] "r"(packCPtr7),    // %5
+     1806                   [pC8] "r"(packCPtr8),    // %6
+     1807                   [pC9] "r"(packCPtr9),    // %6
+     1808                   [pC10]"r"(packCPtr10),   // %7
+     1809                   [pC11]"r"(packCPtr11),   // %7
+     1810                   [pC12]"r"(packCPtr12),   // %7
+     1811                   [pC13]"r"(packCPtr13),   // %7
+     1812                   [ldc] "r"(ldc),
+     1813                   [kc]  "r"(kc_adjust),
+     1814                   [preA]"r"(PREFETCH_A),
+     1815                   [preB]"r"(PREFETCH_B),
+     1816                   [preC]"r"(PREFETCH_C)
+     1817                 : "memory", "cc", "p0", "x4", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z8", "z9",
+     1818                   "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18", "z19", "z20", "z21",
+     1819                   "z22", "z23", "z24", "z25", "z26", "z27", "z28", "z29", "z30", "z31");
+     1820             
+     1821             #else
+     1822             #endif
+     1823             }
+     1824             
+     1825             
+     1826             
+     1827             template <int N>
+     1828             void kernel_Nx32_template(int kc_adjust, float *packA, float *packB, float *packC, int ldc)
+     1829             {
+     1830                 float* packAPtr = packA;
+     1831                 float* packBPtr = packB;
+     1832                 float* cPtr = packC;
+     1833             
+     1834                 const svbool_t p32_all = svptrue_b32();
+     1835             
+     1836                 svfloat32_t va;
+     1837                 svfloat32_t vb0,   vb1;
+     1838                 svfloat32_t vc00,  vc01;
+     1839                 svfloat32_t vc10,  vc11;
+     1840                 svfloat32_t vc20,  vc21;
+     1841                 svfloat32_t vc30,  vc31;
+     1842                 svfloat32_t vc40,  vc41;
+     1843                 svfloat32_t vc50,  vc51;
+     1844                 svfloat32_t vc60,  vc61;
+     1845                 svfloat32_t vc70,  vc71;
+     1846                 svfloat32_t vc80,  vc81;
+     1847                 svfloat32_t vc90,  vc91;
+     1848                 svfloat32_t vc100, vc101;
+     1849                 svfloat32_t vc110, vc111;
+     1850                 svfloat32_t vc120, vc121;
+     1851                 svfloat32_t vc130, vc131;
+     1852             
+     1853                 if (N > 0)
+     1854                 {
+     1855                     vc00  = svld1_f32(p32_all, cPtr);
+     1856                     vc01  = svld1_f32(p32_all, cPtr + 16);
+     1857                     cPtr += ldc;
+     1858                 }
+     1859                 if (N > 1)
+     1860                 {
+     1861                     vc10  = svld1_f32(p32_all, cPtr);
+     1862                     vc11  = svld1_f32(p32_all, cPtr + 16);
+     1863                     cPtr += ldc;
+     1864                 }
+     1865                 if (N > 2)
+     1866                 {
+     1867                     vc20  = svld1_f32(p32_all, cPtr);
+     1868                     vc21  = svld1_f32(p32_all, cPtr + 16);
+     1869                     cPtr += ldc; 
+     1870                 }
+     1871                 if (N > 3)
+     1872                 {
+     1873                     vc30  = svld1_f32(p32_all, cPtr);
+     1874                     vc31  = svld1_f32(p32_all, cPtr + 16);
+     1875                     cPtr += ldc; 
+     1876                 }
+     1877                 if (N > 4)
+     1878                 {
+     1879                     vc40  = svld1_f32(p32_all, cPtr);
+     1880                     vc41  = svld1_f32(p32_all, cPtr + 16);
+     1881                     cPtr += ldc; 
+     1882                 }
+     1883                 if (N > 5)
+     1884                 {
+     1885                     vc50  = svld1_f32(p32_all, cPtr);
+     1886                     vc51  = svld1_f32(p32_all, cPtr + 16);
+     1887                     cPtr += ldc; 
+     1888                 }
+     1889                 if (N > 6) 
+     1890                 {
+     1891                     vc60  = svld1_f32(p32_all, cPtr);
+     1892                     vc61  = svld1_f32(p32_all, cPtr + 16);
+     1893                     cPtr += ldc; 
+     1894                 }
+     1895                 if (N > 7)
+     1896                 {
+     1897                     vc70  = svld1_f32(p32_all, cPtr);
+     1898                     vc71  = svld1_f32(p32_all, cPtr + 16);
+     1899                     cPtr += ldc; 
+     1900                 }
+     1901                 if (N > 8)
+     1902                 {
+     1903                     vc80  = svld1_f32(p32_all, cPtr);
+     1904                     vc81  = svld1_f32(p32_all, cPtr + 16);
+     1905                     cPtr += ldc; 
+     1906                 }
+     1907                 if (N > 9)
+     1908                 {
+     1909                     vc90  = svld1_f32(p32_all, cPtr);
+     1910                     vc91  = svld1_f32(p32_all, cPtr + 16);
+     1911                     cPtr += ldc; 
+     1912                 }
+     1913                 if (N > 10)
+     1914                 {
+     1915                     vc100 = svld1_f32(p32_all, cPtr);
+     1916                     vc101 = svld1_f32(p32_all, cPtr + 16);
+     1917                     cPtr += ldc; 
+     1918                 }
+     1919                 if (N > 11)
+     1920                 {
+     1921                     vc110 = svld1_f32(p32_all, cPtr);
+     1922                     vc111 = svld1_f32(p32_all, cPtr + 16);
+     1923                     cPtr += ldc; 
+     1924                 }
+     1925                 if (N > 12)
+     1926                 {
+     1927                     vc110 = svld1_f32(p32_all, cPtr);
+     1928                     vc111 = svld1_f32(p32_all, cPtr + 16);
+     1929                     cPtr += ldc; 
+     1930                 }
+     1931                 if (N > 13)
+     1932                 {
+     1933                     vc120 = svld1_f32(p32_all, cPtr);
+     1934                     vc121 = svld1_f32(p32_all, cPtr + 16);
+     1935                     cPtr += ldc; 
+     1936                 }
+     1937                 if (N > 14)
+     1938                 {
+     1939                     vc130 = svld1_f32(p32_all, cPtr);
+     1940                     vc131 = svld1_f32(p32_all, cPtr + 16);
+     1941                     cPtr += ldc; 
+     1942                 }
+     1943             
+     1944                 // to-do
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    SOFTWARE PIPELINING(IPC: 1.22, ITR: 6, MVE: 2, POL: S)
+                       <<<    PREFETCH(SOFT) : 40
+                       <<<     SEQUENTIAL : 40
+                       <<<      (unknown): 40
+                       <<< Loop-information  End >>>
+     1945         2       for (int p = 0; p < kc_adjust; p++)
+     1946         2       {
+     1947         2           vb0 = svld1_f32(p32_all, packBPtr);
+     1948         2           vb1 = svld1_f32(p32_all, packBPtr + 16);
+     1949             
+     1950         2           if (N > 0)
+     1951         2           {
+     1952         2               va   = svdup_n_f32(packAPtr[0]);
+     1953         2               vc00 = svmla_f32_x(p32_all, vc00, va, vb0); 
+     1954         2               vc01 = svmla_f32_x(p32_all, vc01, va, vb1); 
+     1955         2           }
+     1956         2           if (N > 1)
+     1957         2           {
+     1958         2               va   = svdup_n_f32(packAPtr[1]);
+     1959         2               vc10 = svmla_f32_x(p32_all, vc10, va, vb0); 
+     1960         2               vc11 = svmla_f32_x(p32_all, vc11, va, vb1); 
+     1961         2           }
+     1962         2           if (N > 2)
+     1963         2           {
+     1964         2               va   = svdup_n_f32(packAPtr[2]);
+     1965         2               vc20 = svmla_f32_x(p32_all, vc20, va, vb0); 
+     1966         2               vc21 = svmla_f32_x(p32_all, vc21, va, vb1); 
+     1967         2           }
+     1968         2           if (N > 3)
+     1969         2           {
+     1970         2               va   = svdup_n_f32(packAPtr[3]);
+     1971         2               vc30 = svmla_f32_x(p32_all, vc30, va, vb0); 
+     1972         2               vc31 = svmla_f32_x(p32_all, vc31, va, vb1); 
+     1973         2           }
+     1974         2           if (N > 4)
+     1975         2           {
+     1976         2               va   = svdup_n_f32(packAPtr[4]);
+     1977         2               vc40 = svmla_f32_x(p32_all, vc40, va, vb0); 
+     1978         2               vc41 = svmla_f32_x(p32_all, vc41, va, vb1); 
+     1979         2           }
+     1980         2           if (N > 5)
+     1981         2           {
+     1982         2               va   = svdup_n_f32(packAPtr[5]);
+     1983         2               vc50 = svmla_f32_x(p32_all, vc50, va, vb0); 
+     1984         2               vc51 = svmla_f32_x(p32_all, vc51, va, vb1); 
+     1985         2           }
+     1986         2           if (N > 6)
+     1987         2           {
+     1988         2               va  = svdup_n_f32(packAPtr[6]);
+     1989         2               vc60 = svmla_f32_x(p32_all, vc60, va, vb0); 
+     1990         2               vc61 = svmla_f32_x(p32_all, vc61, va, vb1); 
+     1991         2           }
+     1992         2           if (N > 7)
+     1993         2           {
+     1994         2               va   = svdup_n_f32(packAPtr[7]);
+     1995         2               vc70 = svmla_f32_x(p32_all, vc70, va, vb0); 
+     1996         2               vc71 = svmla_f32_x(p32_all, vc71, va, vb1); 
+     1997         2           }
+     1998         2           if (N > 8)
+     1999         2           {
+     2000         2               va   = svdup_n_f32(packAPtr[8]);
+     2001         2               vc80 = svmla_f32_x(p32_all, vc80, va, vb0); 
+     2002         2               vc81 = svmla_f32_x(p32_all, vc81, va, vb1); 
+     2003         2           }
+     2004         2           if (N > 9)
+     2005         2           {
+     2006         2               va   = svdup_n_f32(packAPtr[9]);
+     2007         2               vc90 = svmla_f32_x(p32_all, vc90, va, vb0); 
+     2008         2               vc91 = svmla_f32_x(p32_all, vc91, va, vb1); 
+     2009         2           }
+     2010         2           if (N > 10)
+     2011         2           {
+     2012         2               va    = svdup_n_f32(packAPtr[10]);
+     2013         2               vc100 = svmla_f32_x(p32_all, vc100, va, vb0); 
+     2014         2               vc101 = svmla_f32_x(p32_all, vc101, va, vb1); 
+     2015         2           }
+     2016         2           if (N > 11)
+     2017         2           {
+     2018         2               va    = svdup_n_f32(packAPtr[11]);
+     2019         2               vc110 = svmla_f32_x(p32_all, vc110, va, vb0); 
+     2020         2               vc111 = svmla_f32_x(p32_all, vc111, va, vb1); 
+     2021         2           }
+     2022         2           if (N > 12)
+     2023         2           {
+     2024         2               va    = svdup_n_f32(packAPtr[12]);
+     2025         2               vc110 = svmla_f32_x(p32_all, vc120, va, vb0); 
+     2026         2               vc111 = svmla_f32_x(p32_all, vc121, va, vb1); 
+     2027         2           }
+     2028         2           if (N > 13)
+     2029         2           {
+     2030         2               va    = svdup_n_f32(packAPtr[13]);
+     2031         2               vc110 = svmla_f32_x(p32_all, vc130, va, vb0); 
+     2032         2               vc111 = svmla_f32_x(p32_all, vc131, va, vb1); 
+     2033         2           }
+     2034             
+     2035             
+     2036         2           packBPtr += 32;
+     2037         2           packAPtr += N;
+     2038         2       }
+     2039             
+     2040                 // 将结果写回
+     2041                 cPtr = packC;
+     2042                 if (N > 0)
+     2043                 {
+     2044                     svst1_f32(p32_all, cPtr, vc00);
+     2045                     svst1_f32(p32_all, cPtr + 16, vc01);
+     2046                     cPtr += ldc;
+     2047                 }
+     2048                 if (N > 1)
+     2049                 {
+     2050                     svst1_f32(p32_all, cPtr, vc10);
+     2051                     svst1_f32(p32_all, cPtr + 16, vc11);
+     2052                     cPtr += ldc;
+     2053                 }
+     2054                 if (N > 2)
+     2055                 {
+     2056                     svst1_f32(p32_all, cPtr, vc20);
+     2057                     svst1_f32(p32_all, cPtr + 16, vc21);
+     2058                     cPtr += ldc;
+     2059                 }
+     2060                 if (N > 3)
+     2061                 {
+     2062                     svst1_f32(p32_all, cPtr, vc30);
+     2063                     svst1_f32(p32_all, cPtr + 16, vc31);
+     2064                     cPtr += ldc;
+     2065                 }
+     2066                 if (N > 4)
+     2067                 {
+     2068                     svst1_f32(p32_all, cPtr, vc40);
+     2069                     svst1_f32(p32_all, cPtr + 16, vc41);
+     2070                     cPtr += ldc;
+     2071                 }
+     2072                 if (N > 5)
+     2073                 {
+     2074                     svst1_f32(p32_all, cPtr, vc50);
+     2075                     svst1_f32(p32_all, cPtr + 16, vc51);
+     2076                     cPtr += ldc;
+     2077                 }
+     2078                 if (N > 6)
+     2079                 {
+     2080                     svst1_f32(p32_all, cPtr, vc60);
+     2081                     svst1_f32(p32_all, cPtr + 16, vc61);
+     2082                     cPtr += ldc;
+     2083                 }
+     2084                 if (N > 7)
+     2085                 {
+     2086                     svst1_f32(p32_all, cPtr, vc70);
+     2087                     svst1_f32(p32_all, cPtr + 16, vc71);
+     2088                     cPtr += ldc;
+     2089                 }
+     2090                 if (N > 8)
+     2091                 {
+     2092                     svst1_f32(p32_all, cPtr, vc80);
+     2093                     svst1_f32(p32_all, cPtr + 16, vc81);
+     2094                     cPtr += ldc;
+     2095                 }
+     2096                 if (N > 9)
+     2097                 {
+     2098                     svst1_f32(p32_all, cPtr, vc90);
+     2099                     svst1_f32(p32_all, cPtr + 16, vc91);
+     2100                     cPtr += ldc;
+     2101                 }
+     2102                 if (N > 10)
+     2103                 {
+     2104                     svst1_f32(p32_all, cPtr, vc100);
+     2105                     svst1_f32(p32_all, cPtr + 16, vc101);
+     2106                     cPtr += ldc;
+     2107                 }
+     2108                 if (N > 11)
+     2109                 {
+     2110                     svst1_f32(p32_all, cPtr, vc110);
+     2111                     svst1_f32(p32_all, cPtr + 16, vc111);
+     2112                     cPtr += ldc;
+     2113                 }
+     2114                 if (N > 12)
+     2115                 {
+     2116                     svst1_f32(p32_all, cPtr, vc120);
+     2117                     svst1_f32(p32_all, cPtr + 16, vc121);
+     2118                     cPtr += ldc;
+     2119                 }
+     2120                 if (N > 13)
+     2121                 {
+     2122                     svst1_f32(p32_all, cPtr, vc130);
+     2123                     svst1_f32(p32_all, cPtr + 16, vc131);
+     2124                     cPtr += ldc;
+     2125                 }
+     2126             }
+     2127             
+     2128             InnerKernelForCorner get_kernel_Nx32(int k) {
+     2129                 if (k == 1)
+     2130                     return kernel_Nx32_template<1>;
+     2131                 else if (k == 2)
+     2132                     return kernel_Nx32_template<2>;
+     2133                 else if (k == 3)
+     2134                     return kernel_Nx32_template<3>;
+     2135                 else if (k == 4)
+     2136                     return kernel_Nx32_template<4>;
+     2137                 else if (k == 5)
+     2138                     return kernel_Nx32_template<5>;
+     2139                 else if (k == 6)
+     2140                     return kernel_Nx32_template<6>;
+     2141                 else if (k == 7)
+     2142                     return kernel_Nx32_template<7>;
+     2143                 else if (k == 8)
+     2144                     return kernel_Nx32_template<8>;
+     2145                 else if (k == 9)
+     2146                     return kernel_Nx32_template<9>;
+     2147                 else if (k == 10)
+     2148                     return kernel_Nx32_template<10>;
+     2149                 else if (k == 11)
+     2150                     return kernel_Nx32_template<11>;
+     2151                 else if (k == 12)
+     2152                     return kernel_Nx32_template<12>;
+     2153                 else if (k == 13)
+     2154                     return kernel_Nx32_template<13>;
+     2155                 return kernel_Nx32_template<14>;
+     2156             }
+     2157             
+     2158             template <int N>
+     2159             void kernel_Nx64_template(int kc_adjust, float *packA, float *packB, float *packC, int ldc)
+     2160             {
+     2161                 float* packAPtr = packA;
+     2162                 float* packBPtr = packB;
+     2163                 float* cPtr = packC;
+     2164             
+     2165                 const svbool_t p32_all = svptrue_b32();
+     2166             
+     2167                 svfloat32_t va0,  va1,  va2,  va3;
+     2168                 svfloat32_t vb0,  vb1,  vb2,  vb3;
+     2169                 svfloat32_t vc00, vc01, vc02, vc03;
+     2170                 svfloat32_t vc10, vc11, vc12, vc13;
+     2171                 svfloat32_t vc20, vc21, vc22, vc23;
+     2172                 svfloat32_t vc30, vc31, vc32, vc33;
+     2173             
+     2174                 if (N > 0)
+     2175                 {
+     2176                     vc00  = svld1_f32(p32_all, cPtr);
+     2177                     vc01  = svld1_f32(p32_all, cPtr + 16);
+     2178                     vc02  = svld1_f32(p32_all, cPtr + 32);
+     2179                     vc03  = svld1_f32(p32_all, cPtr + 48);
+     2180                     cPtr += ldc;
+     2181                 }
+     2182                 if (N > 1)
+     2183                 {
+     2184                     vc10  = svld1_f32(p32_all, cPtr);
+     2185                     vc11  = svld1_f32(p32_all, cPtr + 16);
+     2186                     vc12  = svld1_f32(p32_all, cPtr + 32);
+     2187                     vc13  = svld1_f32(p32_all, cPtr + 48);
+     2188                     cPtr += ldc;
+     2189                 }
+     2190                 if (N > 2)
+     2191                 {
+     2192                     vc20  = svld1_f32(p32_all, cPtr);
+     2193                     vc21  = svld1_f32(p32_all, cPtr + 16);
+     2194                     vc22  = svld1_f32(p32_all, cPtr + 32);
+     2195                     vc23  = svld1_f32(p32_all, cPtr + 48);
+     2196                     cPtr += ldc; 
+     2197                 }
+     2198                 if (N > 3)
+     2199                 {
+     2200                     vc30  = svld1_f32(p32_all, cPtr);
+     2201                     vc31  = svld1_f32(p32_all, cPtr + 16);
+     2202                     vc32  = svld1_f32(p32_all, cPtr + 32);
+     2203                     vc33  = svld1_f32(p32_all, cPtr + 48);
+     2204                     cPtr += ldc; 
+     2205                 }
+     2206             
+     2207                 // to-do
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    SOFTWARE PIPELINING(IPC: 3.40, ITR: 5, MVE: 3, POL: S)
+                       <<<    PREFETCH(SOFT) : 8
+                       <<<     SEQUENTIAL : 8
+                       <<<      (unknown): 8
+                       <<< Loop-information  End >>>
+     2208                 for (int p = 0; p < kc_adjust; p++)
+     2209                 {
+     2210                     vb0 = svld1_f32(p32_all, packBPtr);
+     2211                     vb1 = svld1_f32(p32_all, packBPtr + 16);
+     2212                     vb2 = svld1_f32(p32_all, packBPtr + 32);
+     2213                     vb3 = svld1_f32(p32_all, packBPtr + 48);
+     2214             
+     2215                     if (N > 0)
+     2216                     {
+     2217                         va0  = svdup_n_f32(packAPtr[0]);
+     2218                         vc00 = svmla_f32_x(p32_all, vc00, va0, vb0); 
+     2219                         vc01 = svmla_f32_x(p32_all, vc01, va0, vb1); 
+     2220                         vc02 = svmla_f32_x(p32_all, vc02, va0, vb2); 
+     2221                         vc03 = svmla_f32_x(p32_all, vc03, va0, vb3); 
+     2222                     }
+     2223                     if (N > 1)
+     2224                     {
+     2225                         va1  = svdup_n_f32(packAPtr[1]);
+     2226                         vc10 = svmla_f32_x(p32_all, vc10, va1, vb0); 
+     2227                         vc11 = svmla_f32_x(p32_all, vc11, va1, vb1); 
+     2228                         vc12 = svmla_f32_x(p32_all, vc12, va1, vb2); 
+     2229                         vc13 = svmla_f32_x(p32_all, vc13, va1, vb3); 
+     2230                     }
+     2231                     if (N > 2)
+     2232                     {
+     2233                         va2  = svdup_n_f32(packAPtr[2]);
+     2234                         vc20 = svmla_f32_x(p32_all, vc20, va2, vb0); 
+     2235                         vc21 = svmla_f32_x(p32_all, vc21, va2, vb1); 
+     2236                         vc22 = svmla_f32_x(p32_all, vc22, va2, vb2); 
+     2237                         vc23 = svmla_f32_x(p32_all, vc23, va2, vb3); 
+     2238                     }
+     2239                     if (N > 3)
+     2240                     {
+     2241                         va3  = svdup_n_f32(packAPtr[3]);
+     2242                         vc30 = svmla_f32_x(p32_all, vc30, va3, vb0); 
+     2243                         vc31 = svmla_f32_x(p32_all, vc31, va3, vb1); 
+     2244                         vc32 = svmla_f32_x(p32_all, vc32, va3, vb2); 
+     2245                         vc33 = svmla_f32_x(p32_all, vc33, va3, vb3); 
+     2246                     }
+     2247             
+     2248                     packBPtr += 64;
+     2249                     packAPtr += N;
+     2250                 }
+     2251             
+     2252                 // 将结果写回
+     2253                 cPtr = packC;
+     2254                 if (N > 0)
+     2255                 {
+     2256                     svst1_f32(p32_all, cPtr, vc00);
+     2257                     svst1_f32(p32_all, cPtr + 16, vc01);
+     2258                     svst1_f32(p32_all, cPtr + 32, vc02);
+     2259                     svst1_f32(p32_all, cPtr + 48, vc03);
+     2260                     cPtr += ldc;
+     2261                 }
+     2262                 if (N > 1)
+     2263                 {
+     2264                     svst1_f32(p32_all, cPtr, vc10);
+     2265                     svst1_f32(p32_all, cPtr + 16, vc11);
+     2266                     svst1_f32(p32_all, cPtr + 32, vc12);
+     2267                     svst1_f32(p32_all, cPtr + 48, vc13);
+     2268                     cPtr += ldc;
+     2269                 }
+     2270                 if (N > 2)
+     2271                 {
+     2272                     svst1_f32(p32_all, cPtr, vc20);
+     2273                     svst1_f32(p32_all, cPtr + 16, vc21);
+     2274                     svst1_f32(p32_all, cPtr + 32, vc22);
+     2275                     svst1_f32(p32_all, cPtr + 48, vc23);
+     2276                     cPtr += ldc;
+     2277                 }
+     2278                 if (N > 3)
+     2279                 {
+     2280                     svst1_f32(p32_all, cPtr, vc30);
+     2281                     svst1_f32(p32_all, cPtr + 16, vc31);
+     2282                     svst1_f32(p32_all, cPtr + 32, vc32);
+     2283                     svst1_f32(p32_all, cPtr + 48, vc33);
+     2284                     cPtr += ldc;
+     2285                 }
+     2286             }
+     2287             
+     2288             InnerKernelForCorner get_kernel_Nx64(int k) {
+     2289                 if (k == 1)
+     2290                     return kernel_Nx64_template<1>;
+     2291                 else if (k == 2)
+     2292                     return kernel_Nx64_template<2>;
+     2293                 else if (k == 3)
+     2294                     return kernel_Nx64_template<3>;
+     2295                 return kernel_Nx64_template<4>;
+     2296             }
+Total prefetch num: 104
+Statistics information
+  Option information
+    Command line options : -c -std=c++11 -I/vol0004/ra000012/a04453/FastConv -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp -Nlst=t -o obj/./im2col/SVE/sve_gemm_kernel.o
+    Effective options    : -g0 -mt -Qy -std=gnu++11 -x- -x=quick -O3 -Knoalias_const
+                           -Kalign_loops -Knoarray_declaration_opt -Kassume=noshortloop
+                           -Kassume=nomemory_bandwidth -Kassume=notime_saving_compilation
+                           -Kcmodel=small -Keval -Keval_noconcurrent
+                           -Knoextract_stride_store -Kfast_matmul -Knofenv_access
+                           -Kfp_contract -Kfp_relaxed -Kfsimple -Kfz -Khpctag
+                           -Kilfunc=procedure -Klargepage -Klib -Kloop_blocking
+                           -Kloop_fission -Kloop_nofission_stripmining
+                           -Kloop_fission_threshold=50 -Kloop_fusion -Kloop_interchange
+                           -Kloop_part_simd -Kloop_perfect_nest -Kloop_noversioning
+                           -Klooptype=f -Knomemalias -Kmfunc=1 -Knoocl -Komitfp -Kopenmp
+                           -Kopenmp_noassume_norecurrence
+                           -Kopenmp_nocollapse_except_innermost
+                           -Kopenmp_loop_variable=private -Kopenmp_noordered_reduction
+                           -Knoopenmp_simd -Knooptlib_string -Knooptmsg
+                           -Knopc_relative_literal_loads -Knoparallel
+                           -Kparallel_nofp_precision -Knopreex -Kprefetch_cache_level=all
+                           -Kprefetch_noconditional -Kprefetch_noindirect -Kprefetch_noinfer
+                           -Kprefetch_line=2 -Kprefetch_line_L2=10
+                           -Kprefetch_sequential=soft -Kprefetch_nostride -Kprefetch_strong
+                           -Kprefetch_strong_L2 -Knopreload -Krdconv=1
+                           -Kremove_inlinefunction -Knorestp -Ksch_post_ra -Ksch_pre_ra
+                           -Ksibling_calls -Ksimd=auto -Ksimd_packed_promotion
+                           -Ksimd_reduction_product -Ksimd_reg_size=512
+                           -Ksimd_nouncounted_loop -Ksimd_use_multiple_structures
+                           -Knostrict_aliasing -Knostriping -KA64FX -KARMV8_3_A -KSVE -Kswp
+                           -Kswp_freg_rate=100 -Kswp_ireg_rate=100 -Kswp_preg_rate=100
+                           -Kswp_policy=auto -Kunroll -Knounroll_and_jam -Kzfill=9
+                           -Ncancel_overtime_compilation -Nnocoverage -Nexceptions -Nnofjcex
+                           -Nfjprof -Nnohook_func -Nnohook_time -Nlibomp -Nline -Nlst=p
+                           -Nlst=t -Nquickdbg=noheapchk -Nquickdbg=nosubchk -NRnotrap
+                           -Nnoreordered_variable_stack -Nrt_notune -Nsetvalue=noheap
+                           -Nsetvalue=nostack -Nsetvalue=noscalar -Nsetvalue=noarray
+                           -Nsetvalue=nostruct -Nsrc -Nsta

@@ -222,20 +222,32 @@ void pack_b_v2_8x48_multithread_2d(int kc_adjust, int nc_adjust, float *B, int l
                                     int nc_from, int nc_to, int kc_from, int kc_to,
                                     const int ROW_BATCH, const int COL_BATCH) {
     int remain_col_start = nc_to - (nc_to - nc_from) % COL_BATCH;
-    float *B_ptr, *packB_ptr;
+    float *B_ptr, *pre_B_ptr, *packB_ptr;
     svbool_t pg_all = svptrue_b32();
-	#pragma fj loop prefetch_stride 
+	// #pragma fj loop prefetch_stride 
     for (int n = nc_from; n < remain_col_start; n += COL_BATCH) {
         B_ptr = B + kc_from * ldb + n;
+		pre_B_ptr = B_ptr;
         packB_ptr = packB + n * kc_adjust + COL_BATCH * kc_from;
+        asm volatile ("prfm	pldl2strm, [%[pre_B_ptr]]\n"::[pre_B_ptr]"r"(pre_B_ptr):);
+		pre_B_ptr += ldb;
+        asm volatile ("prfm	pldl2strm, [%[pre_B_ptr]]\n"::[pre_B_ptr]"r"(pre_B_ptr):);
+		pre_B_ptr += ldb;
+        asm volatile ("prfm	pldl2strm, [%[pre_B_ptr]]\n"::[pre_B_ptr]"r"(pre_B_ptr):);
+		pre_B_ptr += ldb;
+        asm volatile ("prfm	pldl2strm, [%[pre_B_ptr]]\n"::[pre_B_ptr]"r"(pre_B_ptr):);
+		pre_B_ptr += ldb;
+        asm volatile ("prfm	pldl2strm, [%[pre_B_ptr]]\n"::[pre_B_ptr]"r"(pre_B_ptr):);
+		pre_B_ptr += ldb;
         for (int k = kc_from; k < kc_to; k++) {
-            asm volatile ("prfm	pldl2keep, [%[B_ptr], 256]\n"::[B_ptr]"r"(B_ptr):);
-            asm volatile ("prfm	pldl2keep, [%[packB_ptr], 256]\n"::[packB_ptr]"r"(packB_ptr):);
+            asm volatile ("prfm	pldl2strm, [%[pre_B_ptr]]\n"::[pre_B_ptr]"r"(pre_B_ptr):);
+            asm volatile ("prfm	pstl1keep, [%[packB_ptr], 256]\n"::[packB_ptr]"r"(packB_ptr):);
             svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, B_ptr));
             svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, B_ptr + 16));
             svst1_f32(pg_all, packB_ptr + 32, svld1_f32(pg_all, B_ptr + 32));
             packB_ptr += COL_BATCH;
             B_ptr += ldb;
+			pre_B_ptr += ldb;
         }
     }
 
@@ -251,6 +263,42 @@ void pack_b_v2_8x48_multithread_2d(int kc_adjust, int nc_adjust, float *B, int l
             B_ptr += ldb;
         }
     }
+}
+
+void pack_b_v2_8x48_multithread_2d_v1(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB,
+                                    int nc_from, int nc_to, int kc_from, int kc_to,
+                                    const int ROW_BATCH, const int COL_BATCH) 
+{
+    float *b_ptr, *packB_ptr;
+    int remain_col_start = nc_to - (nc_to - nc_from) % COL_BATCH;
+    int step = COL_BATCH * kc_adjust;
+    svbool_t pg_all = svptrue_b32();
+
+    // 每次处理B的一行
+    // #pragma omp for schedule(static) private(BPtr, packBPtr)
+    for (int k = kc_from; k < kc_to; k++) {
+        b_ptr = B + ldb * k + nc_from;
+        packB_ptr = packB + nc_from * kc_adjust + COL_BATCH * k;
+
+        // 在B的一行中一次拷贝 COL_BATCH 个元素
+        for (int j = nc_from; j < remain_col_start; j += COL_BATCH) {
+            svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, b_ptr));
+            svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, b_ptr + 16));
+            svst1_f32(pg_all, packB_ptr + 32, svld1_f32(pg_all, b_ptr + 32));
+
+            b_ptr += COL_BATCH;
+            packB_ptr += step;
+        }
+
+        if (remain_col_start < nc_to) {
+            int remain = nc_to - remain_col_start;
+            packB_ptr = packB + remain_col_start * kc_adjust + remain * k;
+            for (int i = 0; i < remain; i++) {
+                packB_ptr[i] = b_ptr[i];
+            }
+        }
+    }
+
 }
 
 void pack_b_v2_5x64_multithread_2d(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB,
@@ -287,6 +335,43 @@ void pack_b_v2_5x64_multithread_2d(int kc_adjust, int nc_adjust, float *B, int l
             B_ptr += ldb;
         }
     }
+}
+
+void pack_b_v2_5x64_multithread_2d_v1(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB,
+                                    int nc_from, int nc_to, int kc_from, int kc_to,
+                                    const int ROW_BATCH, const int COL_BATCH) 
+{
+    float *b_ptr, *packB_ptr;
+    int remain_col_start = nc_to - (nc_to - nc_from) % COL_BATCH;
+    int step = COL_BATCH * kc_adjust;
+    svbool_t pg_all = svptrue_b32();
+
+    // 每次处理B的一行
+    // #pragma omp for schedule(static) private(BPtr, packBPtr)
+    for (int k = kc_from; k < kc_to; k++) {
+        b_ptr = B + ldb * k + nc_from;
+        packB_ptr = packB + nc_from * kc_adjust + COL_BATCH * k;
+
+        // 在B的一行中一次拷贝 COL_BATCH 个元素
+        for (int j = nc_from; j < remain_col_start; j += COL_BATCH) {
+            svst1_f32(pg_all, packB_ptr,      svld1_f32(pg_all, b_ptr));
+            svst1_f32(pg_all, packB_ptr + 16, svld1_f32(pg_all, b_ptr + 16));
+            svst1_f32(pg_all, packB_ptr + 32, svld1_f32(pg_all, b_ptr + 32));
+            svst1_f32(pg_all, packB_ptr + 48, svld1_f32(pg_all, b_ptr + 48));
+
+            b_ptr += COL_BATCH;
+            packB_ptr += step;
+        }
+
+        if (remain_col_start < nc_to) {
+            int remain = nc_to - remain_col_start;
+            packB_ptr = packB + remain_col_start * kc_adjust + remain * k;
+            for (int i = 0; i < remain; i++) {
+                packB_ptr[i] = b_ptr[i];
+            }
+        }
+    }
+
 }
 
 void pack_b_v2_4x64(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB, const int ROW_BATCH, const int COL_BATCH)

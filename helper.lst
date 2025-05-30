@@ -1,0 +1,221 @@
+Fujitsu C/C++ Version 4.6.1   Tue Oct 12 15:40:58 2021
+Compilation information
+  Current directory : /vol0004/ra000012/a04453/FastConv
+  Source file       : ./utility/helper.cpp
+(line-no.)(optimize)
+        1             //Tencent is pleased to support the open source community by making FeatherCNN available.
+        2             
+        3             //Copyright (C) 2018 THL A29 Limited, a Tencent company. All rights reserved.
+        4             
+        5             //Licensed under the BSD 3-Clause License (the "License"); you may not use this file except
+        6             //in compliance with the License. You may obtain a copy of the License at
+        7             //
+        8             //https://opensource.org/licenses/BSD-3-Clause
+        9             //
+       10             //Unless required by applicable law or agreed to in writing, software distributed
+       11             //under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+       12             //CONDITIONS OF ANY KIND, either express or implied. See the License for the
+       13             //specific language governing permissions and limitations under the License.
+       14             
+       15             #include "helper.h"
+       16             
+       17             #include <stdio.h>
+       18             #include <stdio.h>
+       19             // #include <arm_neon.h>
+       20             #include <math.h>
+       21             
+       22             // void print_vec2(float32x4_t* vp)
+       23             // {
+       24             //     float* ep = (float *) vp;
+       25             //     printf("input %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+       26             // }
+       27             
+       28             // void print_vec3(float32x4_t* vp)
+       29             // {
+       30             //     float* ep = (float *) vp;
+       31             //     printf("transformed %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+       32             // }
+       33             
+       34             // void print_vec(float32x4_t* vp, const char* comment)
+       35             // {
+       36             //     float* ep = (float *) vp;
+       37             //     printf("%s %.3f, %.3f, %.3f, %.3f\n", comment, *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+       38             // }
+       39             
+       40             
+       41             // void print_vec(float32x4_t* vp)
+       42             // {
+       43             //     float* ep = (float *) vp;
+       44             //     printf("vec %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+       45             // }
+       46             
+       47             void print_arr(float* vp)
+       48             {
+       49                 float* ep = (float *) vp;
+       50                 printf("arr %.1f, %.1f, %.1f, %.1f\n", *(ep), *(ep + 1), *(ep + 2), *(ep + 3));
+       51             }
+       52             
+       53             void print_floats(const float* arr, const int len)
+       54             {
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 2
+                       <<<     SEQUENTIAL : 2
+                       <<<      (unknown): 2
+                       <<< Loop-information  End >>>
+       55         2       for (int i = 0; i < len; ++i)
+       56         2       {
+       57         2           printf("%.2f ", arr[i]);
+       58         2       }
+       59                 printf("\n\n");
+       60             }
+       61             
+       62             void print_floats(const float* arr, const int dimX, const int dimY)
+       63             {
+       64                 for (int i = 0; i < dimX; ++i)
+       65                 {
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 2
+                       <<<     SEQUENTIAL : 2
+                       <<<      (unknown): 2
+                       <<< Loop-information  End >>>
+       66         2           for (int j = 0; j < dimY; ++j)
+       67         2               printf("%.2f ", arr[i * dimY + j]);
+       68                     printf("\n");
+       69                 }
+       70                 printf("\n\n");
+       71             }
+       72             
+       73             
+       74             float diff(float* arr1, float* arr2, int len)
+       75             {
+       76                 int   num = 0;
+       77                 double dif = 0.0f;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    SIMD(VL: 8)
+                       <<<    SOFTWARE PIPELINING(IPC: 3.75, ITR: 192, MVE: 7, POL: S)
+                       <<<    PREFETCH(SOFT) : 8
+                       <<<     SEQUENTIAL : 8
+                       <<<      (unknown): 8
+                       <<< Loop-information  End >>>
+       78         2v      for (int i = 0; i < len; ++i)
+       79         2v      {
+       80         2v          float err = fabsf(arr1[i] - arr2[i]);
+       81         2v          if (err > 1e-5f)
+       82         2v          {
+       83         2v              dif += err;
+       84         2v              num ++; 
+       85         2v          }
+       86         2v      }
+       87                 printf("The difference is %.5f\n", num==0?0:dif/num);
+       88                 return num==0?0:dif/num;
+       89             }
+       90             float diff(float* arr1, float* arr2, int M, int N)
+       91             {
+       92                 int   num = 0;
+       93                 float dif = 0.0f;
+       94                 for (int i = 0; i < M; ++i)
+       95                 {
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+       96         2           for (int j = 0; j < N; ++j)
+       97         2           {
+       98         2               float err = fabsf(arr1[i * N + j] - arr2[i * N + j]);
+       99         2               if (err > 1e-4)
+      100         2               {
+      101         2                   dif += err;
+      102         2                   num ++;
+      103         2                   printf("Error position (%d, %d), value %.4f, %.4f\n", i, j, arr1[i * N + j], arr2[i * N + j]);
+      104         2               }
+      105         2           }
+      106                 }
+      107                 printf("The difference is %.5f\n", num==0?0:dif/num);
+      108                 return num==0?0:dif/num;
+      109             }
+      110             
+      111             #include <time.h>
+      112             
+      113             void Timer::startBench()
+      114             {
+      115                 clock_gettime(CLOCK_MONOTONIC, &start);
+      116             }
+      117             
+      118             void Timer::accumBench()
+      119             {
+      120                 clock_gettime(CLOCK_MONOTONIC, &stop);
+      121                 accumulate += (stop.tv_sec - start.tv_sec) * 1000.0 + (stop.tv_nsec - start.tv_nsec) / 1000000.0;
+      122             }
+      123             
+      124             void Timer::printBench(const char* comment, int fold)
+      125             {
+      126                 printf("%s %lfms\n", comment, accumulate / fold);
+      127             }
+      128             
+      129             void Timer::endBench(const char* comment)
+      130             {
+      131                 clock_gettime(CLOCK_MONOTONIC, &stop);
+      132                 double elapsedTime = (stop.tv_sec - start.tv_sec) * 1000.0 + (stop.tv_nsec - start.tv_nsec) / 1000000.0;
+      133                 printf("%s %lfms\n", comment, elapsedTime);
+      134             }
+      135             
+      136             double Timer::endBench(double fold)
+      137             {
+      138                 clock_gettime(CLOCK_MONOTONIC, &stop);
+      139                 double elapsedTime = (stop.tv_sec - start.tv_sec) * 1000.0 + (stop.tv_nsec - start.tv_nsec) / 1000000.0; 
+      140                 return (elapsedTime / fold);
+      141             }
+      142             
+      143             void Timer::endBench(const char* comment, double fold)
+      144             {
+      145                 clock_gettime(CLOCK_MONOTONIC, &stop);
+      146                 double elapsedTime = (stop.tv_sec - start.tv_sec) * 1000.0 + (stop.tv_nsec - start.tv_nsec) / 1000000.0;
+      147                 printf("%s time: %lfms\n", comment, elapsedTime / fold);
+      148             }
+      149             
+      150             double Timer::getBench(int fold) {
+      151                 return this->accumulate / (double)fold;
+      152             }
+Total prefetch num: 36
+Statistics information
+  Option information
+    Command line options : -c -std=c++11 -I/vol0004/ra000012/a04453/FastConv -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp -Nlst=t -o obj/./utility/helper.o
+    Effective options    : -g0 -mt -Qy -std=gnu++11 -x- -x=quick -O3 -Knoalias_const
+                           -Kalign_loops -Knoarray_declaration_opt -Kassume=noshortloop
+                           -Kassume=nomemory_bandwidth -Kassume=notime_saving_compilation
+                           -Kcmodel=small -Keval -Keval_noconcurrent
+                           -Knoextract_stride_store -Kfast_matmul -Knofenv_access
+                           -Kfp_contract -Kfp_relaxed -Kfsimple -Kfz -Khpctag
+                           -Kilfunc=procedure -Klargepage -Klib -Kloop_blocking
+                           -Kloop_fission -Kloop_nofission_stripmining
+                           -Kloop_fission_threshold=50 -Kloop_fusion -Kloop_interchange
+                           -Kloop_part_simd -Kloop_perfect_nest -Kloop_noversioning
+                           -Klooptype=f -Knomemalias -Kmfunc=1 -Knoocl -Komitfp -Kopenmp
+                           -Kopenmp_noassume_norecurrence
+                           -Kopenmp_nocollapse_except_innermost
+                           -Kopenmp_loop_variable=private -Kopenmp_noordered_reduction
+                           -Knoopenmp_simd -Knooptlib_string -Knooptmsg
+                           -Knopc_relative_literal_loads -Knoparallel
+                           -Kparallel_nofp_precision -Knopreex -Kprefetch_cache_level=all
+                           -Kprefetch_noconditional -Kprefetch_noindirect -Kprefetch_noinfer
+                           -Kprefetch_line=2 -Kprefetch_line_L2=10
+                           -Kprefetch_sequential=soft -Kprefetch_nostride -Kprefetch_strong
+                           -Kprefetch_strong_L2 -Knopreload -Krdconv=1
+                           -Kremove_inlinefunction -Knorestp -Ksch_post_ra -Ksch_pre_ra
+                           -Ksibling_calls -Ksimd=auto -Ksimd_packed_promotion
+                           -Ksimd_reduction_product -Ksimd_reg_size=512
+                           -Ksimd_nouncounted_loop -Ksimd_use_multiple_structures
+                           -Knostrict_aliasing -Knostriping -KA64FX -KARMV8_3_A -KSVE -Kswp
+                           -Kswp_freg_rate=100 -Kswp_ireg_rate=100 -Kswp_preg_rate=100
+                           -Kswp_policy=auto -Kunroll -Knounroll_and_jam -Kzfill=9
+                           -Ncancel_overtime_compilation -Nnocoverage -Nexceptions -Nnofjcex
+                           -Nfjprof -Nnohook_func -Nnohook_time -Nlibomp -Nline -Nlst=p
+                           -Nlst=t -Nquickdbg=noheapchk -Nquickdbg=nosubchk -NRnotrap
+                           -Nnoreordered_variable_stack -Nrt_notune -Nsetvalue=noheap
+                           -Nsetvalue=nostack -Nsetvalue=noscalar -Nsetvalue=noarray
+                           -Nsetvalue=nostruct -Nsrc -Nsta

@@ -8,7 +8,7 @@
 #include <omp.h>
 #include <numaif.h>
 #include <sys/mman.h>
-// #include <numa.h>
+#include <numa.h>
 #include "fj_tool/fapp.h"	// profiler header
 
 #ifdef __ARM_FEATURE_SVE
@@ -48,6 +48,29 @@ void fill_test_data(float* input, int M, int N) {
         for (int j = 0; j < N; j++) {
             input[i*N + j] = 256 *rand() / double(RAND_MAX);
         }
+    }
+}
+
+void ConvIm2colLayer::alloc_packB_buffer() {
+/*
+	for (int i = 0; i < num_nodes; i++) {
+        packB_buffer[i] = (float*)mmap(NULL, align_ceil(sizeof(float) * (N + 16)/num_nodes * K, PAGE_SIZE), 
+                        PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+	}
+*/
+	#pragma omp parallel for 
+    for (int i = 0; i < 48; i++) {
+		int tid = omp_get_thread_num();
+        if (tid % 12 == 0)
+    	   	packB_buffer[tid / 12] = (float*)_mm_malloc(align_ceil(sizeof(float) * (N + 16)/num_nodes * K, PAGE_SIZE), PAGE_SIZE);
+    }
+} 
+
+void ConvIm2colLayer::release_packB_buffer() {
+    for (int i = 0; i < num_nodes; i++) {
+        // munmap(packB_buffer[i], align_ceil(sizeof(float) * (N + 16)/num_nodes * K, PAGE_SIZE));
+        free(packB_buffer[i]);
     }
 }
 
@@ -99,6 +122,8 @@ ConvIm2colLayer::ConvIm2colLayer(float *input, float *kernel, float *biasw, floa
 	fill_test_data(kernel_data, M, K);
     fill_test_data(transform_input_data, K, N);
 
+    alloc_packB_buffer();
+
 #if CHECK
     output_data_ref = new float[M * N + 32];
     memset(output_data_ref, 0, sizeof(float) * (M * N + 32));
@@ -122,6 +147,7 @@ ConvIm2colLayer::ConvIm2colLayer(float *input, float *kernel, float *biasw, floa
 ConvIm2colLayer::~ConvIm2colLayer() {
     free(this->transform_input_data);
     free(this->padding_input_data);
+    release_packB_buffer();
 #if CHECK
 	delete [] output_data_ref;
 #endif
@@ -214,6 +240,7 @@ void ConvIm2colLayer::select_tuning_range_for_pack(int &pa_begin, int &pa_end, i
     pa_begin = 0;
     pa_step  = 1;
     pa_end   = 1;
+    // pa_end   = 0;
 }
 
 void ConvIm2colLayer::select_tuning_range_for_prefetch(int &pre_a_begin, int &pre_a_end, int &pre_a_step,
@@ -2329,10 +2356,45 @@ void ConvIm2colLayer::GEMM_multithread_v4_MKN_2d_no_packa(float* A, float* B, fl
 void select_kernel_for_corner(inner_kernel_for_corner_func_t& inner_kernel_for_corner_fixm,
                                inner_kernel_for_corner_func_t& inner_kernel_for_corner_fixn,
                                inner_kernel_for_corner_func_t& inner_kernel_for_corner_nofix,
+                               int &row_batch_for_fixm,
                                const int row_batch, const int col_batch,
                                const int remain_row, const int remain_col, 
                                const int simd_width) {
     
+    // int remain_col_regs = (remain_col + simd_width-1)/simd_width;
+    // if (remain_col_regs == 4) {
+    //     inner_kernel_for_corner_fixm = kernel_5x64_no_packa;
+    //     row_batch_for_fixm = 5;
+    //     inner_kernel_for_corner_nofix = 
+    //         kernel_MxN_for_5x64_func_tab[row_batch_for_fixm - 1][remain_col_regs - 1];
+    // } else if (remain_col_regs == 3) {
+    //     inner_kernel_for_corner_fixm = kernel_8x48_no_packa;
+    //     row_batch_for_fixm = 8;
+    //     inner_kernel_for_corner_nofix = 
+    //         kernel_MxN_for_8x48_func_tab[row_batch_for_fixm - 1][remain_col_regs - 1];
+    // } else if (remain_col_regs == 2) {
+    //     inner_kernel_for_corner_fixm = kernel_12x32_no_packa;
+    //     row_batch_for_fixm = 12;
+    //     inner_kernel_for_corner_nofix = 
+    //         kernel_MxN_for_12x32_func_tab[row_batch_for_fixm - 1][remain_col_regs - 1];
+    // } else if (remain_col_regs == 1) {
+    //     inner_kernel_for_corner_fixm = ;
+    //     row_batch_for_fixm = 1;
+    //     inner_kernel_for_corner_nofix = 
+    //         kernel_MxN_func_tab[row_batch_for_fixm - 1][remain_col_regs - 1];
+    // }
+
+    // if (row_batch == 12 && col_batch == 32) {
+    //     inner_kernel_for_corner_fixn  = 
+    //         kernel_MxN_for_12x32_func_tab[remain_row - 1][col_batch/simd_width - 1];
+    // } else if (row_batch == 8 && col_batch == 48) {
+    //     inner_kernel_for_corner_fixn  = 
+    //         kernel_MxN_for_8x48_func_tab[remain_row - 1][col_batch/simd_width - 1];
+    // } else if (row_batch == 5 && col_batch == 64) {
+    //     inner_kernel_for_corner_fixn  = 
+    //         kernel_MxN_for_5x64_func_tab[remain_row - 1][col_batch/simd_width - 1];
+    // }
+
     if (row_batch == 12 && col_batch == 32) {
         inner_kernel_for_corner_fixm  = 
             kernel_MxN_for_12x32_func_tab[row_batch - 1][(remain_col + simd_width-1)/simd_width - 1];
@@ -2405,7 +2467,8 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
     divide_parallel_range(N, nc_parallel_ways, 0, range_n);
 
     // numa memory initializaion
-    size_B = (size_t)(K) * (size_t)(range_n[1] - range_n[0]) + 128;
+    // size_B = (size_t)(K) * (size_t)(range_n[1] - range_n[0]) + 128;
+    size_B = (size_t)(K) * (size_t)(range_n[1] - range_n[0]);
     // size_C = (size_t)(M) * (size_t)(range_n[1] - range_n[0]) + 128;
     size_C = (size_t)(M) * (size_t)(N) + 128;
     // printf("M = %d, nc_parallel_ways = %d, range_n = %d, range_m = %d\n", M, nc_parallel_ways, range_n[1] - range_n[0], range_m[1] - range_m[0]);
@@ -2425,7 +2488,7 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
     }
     // numa node parallism in N
     else if (nc_parallel_ways >= 1) {
-        
+
     } 
     // no parallism on numa node
     else if (mc_parallel_ways == 1 && nc_parallel_ways == 1 && kc_parallel_ways == 1) {
@@ -2443,10 +2506,11 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
         Timer init_in_thread_timer, compute_in_thread_timer;
         Timer packA_timer, packB_timer, kernel1_timer, kernel2_timer, calculate_index_timer, barrier_timer;
 
-        float* next_b;
-        bool is_pre_b;
+        float* next_b = nullptr;
+        bool is_pre_b = false;
 
         int tid = omp_get_thread_num();
+        int nid = tid / 12;
 /*
 		if (tid == 46)
         	init_in_thread_timer.startBench();
@@ -2464,7 +2528,8 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
 
         if (thread_idx_in_group.n == 0) {
 			// packB_memory_block[tid / 12] = (float*) numa_alloc(align_ceil(sizeof(float) * size_B, 2097152));
-            packB_memory_block[thread_group_idx.n] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
+            // packB_memory_block[thread_group_idx.n] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
+			// packB_memory_block[thread_group_idx.n] = (float*)mmap(NULL, sizeof(float) * size_B, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
         }
 
         A = reinterpret_cast<float*>(reinterpret_cast<size_t>(A) | 0x0200000000000000ull);
@@ -2472,10 +2537,11 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
 		#pragma omp barrier
 
 
-
-        // int cpu = sched_getcpu();
-        // int node = numa_node_of_cpu(cpu);
-        // printf("tid = %d, cpu = %d, node = %d\n", tid, cpu, node);
+/*
+        int cpu = sched_getcpu();
+        int node = numa_node_of_cpu(cpu);
+        printf("tid = %d, cpu = %d, node = %d\n", tid, cpu, node);
+*/
 
         int k_from = range_k[0];
         int k_to = range_k[1];
@@ -2498,16 +2564,16 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
 
         int remain_row = (m_to - m_from) % row_batch;
         int remain_col = (n_to - n_from) % col_batch;
+        int row_batch_for_fixm = row_batch;
 
         select_kernel_for_corner(inner_kernel_for_corner_fixm,
                                  inner_kernel_for_corner_fixn,
                                  inner_kernel_for_corner_nofix,
+                                 row_batch_for_fixm,
                                  row_batch, col_batch,
                                  remain_row, remain_col,
                                  simd_width);
 
-        // svbool_t* pg32 = (svbool_t*)malloc(4 * sizeof(svbool_t));
-        svbool_t* pg32 = nullptr;
         svbool_t pg32_0, pg32_1, pg32_2, pg32_3;
         pg32_0 = (remain_col < 1 * simd_width ? 
                     svwhilelt_b32(0, remain_col) : svptrue_b32());
@@ -2518,15 +2584,6 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
         pg32_3 = (remain_col > 3 * simd_width ? 
                     svwhilelt_b32(0, remain_col - 3 * simd_width) : svptrue_b32());
 
-        
-        // pg32[0] = (remain_col < 1 * simd_width ? 
-        //             svwhilelt_b32(0, remain_col) : svptrue_b32());
-        // pg32[1] = (remain_col > 1 * simd_width && remain_col < 2 * simd_width ? 
-        //             svwhilelt_b32(0, remain_col - 1 * simd_width) : svptrue_b32());
-        // pg32[2] = (remain_col > 2 * simd_width && remain_col < 3 * simd_width ? 
-        //             svwhilelt_b32(0, remain_col - 2 * simd_width) : svptrue_b32());
-        // pg32[3] = (remain_col > 3 * simd_width ? 
-        //             svwhilelt_b32(0, remain_col - 3 * simd_width) : svptrue_b32());
 /*
 		if (tid == 46) {
 	    	init_in_thread_timer.endBench("init in thread");
@@ -2547,10 +2604,8 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                 int kc_adjust = min(kc, k_to - kt);
 			    // printf("tid = %d, kt = %d\n", tid, kt);
 
-				// printf("tid_group_idx[0] = %d\n", tid_group_idx[0]);
                 float *packA_copy = A + mt * K + kt;
 
-                    // printf("------mt = %d--------\n", mt);
                 // packA_timer.startBench();
                 // packA_timer.accumBench();
 
@@ -2559,7 +2614,11 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                     int nc_adjust = min(nc, n_to - nt);
                     int nc_from = 0;
                     int nc_to = nc_adjust;
-                    float *packB_copy = packB_memory_block[thread_group_idx.n] 
+                    // float *packB_copy = packB_memory_block[thread_group_idx.n] 
+                    //                     + kt * n_len
+                    //                     + (nt - n_from) * kc_adjust;
+                    float *packB_copy = packB_buffer[nid]
+                                        + thread_group_idx.n % (nc_parallel_ways / num_nodes) * size_B
                                         + kt * n_len
                                         + (nt - n_from) * kc_adjust;
                     // printf("tid = %d, node_id = %d, nt = %d, n_from = %d, n_to = %d, nc_from = %d, nc_to = %d\n", tid, tid / 12, nt, n_from, n_to, nc_from, nc_to);
@@ -2572,6 +2631,7 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
 
                     is_pre_b = false;
 
+                    fapp_start("packB",1,0);
                     if (mt == m_from) {
                         // calculate_index_timer.startBench();
                         // set range kc of pack B for every thread
@@ -2584,26 +2644,53 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                         }
 
                         // barrier_timer.startBench();
-#if PROFILE
-                    	packB_timer.startBench();
-#endif
                         // barrier_timer.accumBench();
                         // calculate_index_timer.accumBench();
 						int pack_b_nc_from = nc_from;
 						int pack_b_nc_to = nc_to;
-                        int pack_b_kc_from = range_kc_for_packB[thread_group_idx.n][thread_group_idx.m];
-                        int pack_b_kc_to = range_kc_for_packB[thread_group_idx.n][thread_group_idx.m + 1];
+                        int pack_b_kc_from = range_kc_for_packB[thread_group_idx.n][thread_idx_in_group.n];
+                        int pack_b_kc_to = range_kc_for_packB[thread_group_idx.n][thread_idx_in_group.n + 1];
+
+						// printf("tid = %d, pack_b_kc_from = %d, pack_b_kc_to = %d\n", tid, pack_b_kc_from, pack_b_kc_to);
 
 						if (pack_b_nc_to > pack_b_nc_from && pack_b_kc_to > pack_b_kc_from) {
+							/*
+                            if (nt + nc_adjust < n_to) {
+                                is_pre_b = true;
+                                next_b = B + (kt + pack_b_kc_from)*ldb + nt + nc;
+                            }
+							*/
+                            /*
+                            if (nc_adjust == nc)
+                                is_pre_b = true;
+                            */
+#if PROFILE
+	                    	packB_timer.startBench();
+#endif
                         	this->pack_b_mt_2d(kc_adjust, nc_adjust, B + kt*ldb + nt, ldb, packB_copy,
                                             pack_b_nc_from, pack_b_nc_to, pack_b_kc_from, pack_b_kc_to,
                                             row_batch, col_batch);
-                    	    #pragma omp barrier
-                        }
-                        // barrier_timer.startBench();
 #if PROFILE
-                    	packB_timer.accumBench();
+   		                 	packB_timer.accumBench();
 #endif
+/*
+                            if (thread_idx_in_group.n == 0) {
+                                size_t n_page = (sizeof(float) * size_B + (PAGE_SIZE - 1)) / PAGE_SIZE;
+                                int status[n_page];
+                                void* pages[n_page];
+                                for (size_t i = 0; i < n_page; i++)
+                                    pages[i] = &((char*)(packB_buffer[nid] + thread_group_idx.n % (nc_parallel_ways / num_nodes) * size_B))[i * 2097152];
+                                if (0 != move_pages(0, n_page, pages, NULL, status, 0))
+                                    printf("failed to inquiry pages because errno %d\n", strerror(errno));
+                                for (size_t i = 0; i < n_page; i++) {
+                                    printf("tid = %d, page_in_nodes = %d\n", tid, status[i]);
+                                }
+                            }
+*/
+
+                        }
+                    	#pragma omp barrier
+                        // barrier_timer.startBench();
                         // barrier_timer.accumBench();
 /*
                         if (nt + nc_adjust < n_to) {
@@ -2612,18 +2699,22 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                         }
 */
                     }
+                    fapp_stop("packB",1,0);
 
                     float *packC_copy = C + mt*ldc + nt;
                     int remain_col_start = nc_to - (nc_to - nc_from) % this->col_batch;
                     int packB_step = col_batch * kc_adjust;
                     
                     // printf("tid = %d, mt = %d, m_from = %d, m_to = %d, mc_from = %d, mc_to = %d, remain_row = %d\n", tid, mt, m_from, m_to, mc_from, mc_to, remain_row);
-#if PROFILE
-                    kernel1_timer.startBench();
-#endif
+// #if PROFILE
+                    // kernel1_timer.startBench();
+// #endif
+                    is_pre_b = false;
+                    fapp_start("kernel",1,0);
+					// printf("tid = %d, kernel_start \n", tid);
                     for (int i = mc_from; i < mc_to; i += row_batch) {
-                        if (i != mc_from)
-                            is_pre_b = false;
+                        // if (i != mc_from)
+                        //     is_pre_b = false;
                         int row_batch_adjust = min(row_batch, mc_to - i);
                         float *packA_ptr = packA_copy + i * K;
                         float *packB_ptr = packB_copy + nc_from * kc_adjust;
@@ -2632,25 +2723,32 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                             for (int j = nc_from; j < nc_to; j += col_batch) {
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
-                                    // kernel1_timer.startBench();
-                                /*    
-                                    if (is_pre_b && this->row_batch == 8) {
+#if PROFILE                                    
+                                    kernel1_timer.startBench();
+#endif
+                                   
+                                    if (is_pre_b && this->row_batch == 8 && (mc_to - i < 16)) {
                                         this->inner_kernel_pre_b(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, next_b, ldb);
                                         next_b += col_batch;
-                                    }
-									
-									else 
-								*/
+										// printf("pre..\n");
+                                    } else { 
                                    		this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, lda, ldc, prefetch_b, prefetch_c);
-                    				// kernel1_timer.accumBench();
+									}
+#if PROFILE                                    
+                    				kernel1_timer.accumBench();
+#endif
                                     // this->inner_kernel(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, prefetch_b, prefetch_c);
                                 }
                                 else {
-                                    // kernel2_timer.startBench();
+#if PROFILE
+                                    kernel2_timer.startBench();
+#endif
                                     inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, 
                                                                 lda, ldc, 1, nc_to - remain_col_start,
                                                                 pg32_0, pg32_1, pg32_2, pg32_3);
-                                    // kernel2_timer.accumBench();
+#if PROFILE
+                                    kernel2_timer.accumBench();
+#endif
                                     // inner_kernel_for_corner_fixm(kc_adjust, packA_ptr, packB_ptr, packC_ptr, n_len, lda, nc_to - remain_col_start, pg32);
                                 }
                                 packB_ptr += packB_step;
@@ -2658,6 +2756,9 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                             }
 
                         } else {
+#if PROFILE
+                            kernel2_timer.startBench();
+#endif
                             for (int j = nc_from; j < nc_to; j += col_batch) {
                                 int col_batch_adjust = min(col_batch, nc_to - j);
                                 if (col_batch_adjust == col_batch) {
@@ -2679,12 +2780,13 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
                                 packB_ptr += packB_step;
                                 packC_ptr += col_batch;
                             }
+#if PROFILE
+                            kernel2_timer.accumBench();
+#endif
                         }
                         
                     }
-#if PROFILE
-                    kernel1_timer.accumBench();
-#endif
+                    fapp_stop("kernel",1,0);
                     // barrier_timer.startBench();
                     // #pragma omp barrier
                     // barrier_timer.accumBench();
@@ -2738,8 +2840,11 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
 
 */
 #if PROFILE
+
             packB_timer.printBench("packB time", 1, tid);
             kernel1_timer.printBench("kernel1 time", 1, tid);
+            kernel2_timer.printBench("kernel2 time", 1, tid);
+
 #endif
 /*
 		if (tid == 46)
@@ -2761,7 +2866,7 @@ void ConvIm2colLayer::GEMM_multithread_v5_MKN_2d_outer_no_packa(float* A, float*
     // }
 	// end_timer.endBench("end");
     for (int i = 0; i < nc_parallel_ways; i++) {
-       	_mm_free(packB_memory_block[i]);
+       	// _mm_free(packB_memory_block[i]);
         // numa_free(packB_memory_block[i], align_ceil(sizeof(float) * size_B, 2097152));
     }
     // _mm_free(packA_memory_block);
@@ -3289,8 +3394,8 @@ void ConvIm2colLayer::GEMM_multithread_v7_MKN_2d_outer_nested_no_packa(float* A,
         //     packB_memory_block[thread_group_idx.n] = (float*)_mm_malloc(sizeof(float) * size_B, PAGE_SIZE);
         // }
 
-        A = reinterpret_cast<float*>(reinterpret_cast<size_t>(A) | 0x0200000000000000ull);
-        C = reinterpret_cast<float*>(reinterpret_cast<size_t>(C) | 0x0100000000000000ull);
+        A = reinterpret_cast<float*>(reinterpret_cast<size_t>(A) | 0x0100000000000000ull);
+        C = reinterpret_cast<float*>(reinterpret_cast<size_t>(C) | 0x0200000000000000ull);
 		#pragma omp barrier
 
 
@@ -3320,10 +3425,12 @@ void ConvIm2colLayer::GEMM_multithread_v7_MKN_2d_outer_nested_no_packa(float* A,
 
         int remain_row = (m_to - m_from) % row_batch;
         int remain_col = (n_to - n_from) % col_batch;
+		int row_batch_for_fixm = row_batch;
 
         select_kernel_for_corner(inner_kernel_for_corner_fixm,
                                  inner_kernel_for_corner_fixn,
                                  inner_kernel_for_corner_nofix,
+								 row_batch_for_fixm,
                                  row_batch, col_batch,
                                  remain_row, remain_col,
                                  simd_width);
@@ -3963,7 +4070,7 @@ void kernel_8x48_pre_b(int kc_adjust, float *packA, float* packB, float *packC, 
 
        "lsl    x14, %[lda], #2 \n"
 
-		"mov    x18, 0x1   \n"
+		"mov    x18, 0x2   \n"
         "lsl    x18, x18, 56      \n"
         "orr    %[pC0], %[pC0], x18 \n"
         "orr    %[pC1], %[pC1], x18 \n"
@@ -4038,7 +4145,8 @@ void kernel_8x48_pre_b(int kc_adjust, float *packA, float* packB, float *packC, 
         "fmla z10.s, p0/M, z2.s, z3.s\n"
 
         "ld1rw { z3.s }, p0/Z, [x10]\n"
-        "prfm	pldl2keep, [%[next_b]]                \n"
+        // "prfm	pldl2keep, [%[next_b]]                \n"
+        "PRFW PLDL2KEEP, p0, [%[next_b]]        \n"
         "add    %[next_b], %[next_b], %[ldb]        \n"
         // "prfm	pldl1keep, [%[pB], #256]                \n"
         "fmla z11.s, p0/M, z0.s, z4.s\n"
@@ -4098,8 +4206,8 @@ void kernel_8x48_pre_b(int kc_adjust, float *packA, float* packB, float *packC, 
 
         // "prfm	pldl1keep, [%[pA], #768]                \n"
         "ld1rw { z4.s }, p0/Z, [x11, #4]\n"
-        "prfm	pldl2keep, [%[next_b]]                \n"
-        "add    %[next_b], %[next_b], %[ldb]        \n"
+        // "prfm	pldl2keep, [%[next_b]]                \n"
+        // "add    %[next_b], %[next_b], %[ldb]        \n"
         "add  x11, x11, #8 \n"
         "fmla z14.s, p0/M, z0.s, z5.s\n"
         "fmla z15.s, p0/M, z1.s, z5.s\n"
@@ -4271,7 +4379,7 @@ void ConvIm2colLayer::set_inner_kernel() {
             this->inner_kernel = kernel_8x48_no_packa;
             // this->inner_kernel = kernel_8x48_no_packa_packb;
             // this->inner_kernel = kernel_8x48_no_packa_v1;
-            // this->inner_kernel_pre_b = kernel_8x48_pre_b;
+            this->inner_kernel_pre_b = kernel_8x48_pre_b;
         }
         else if (this->pack_a_version == 1)
             this->inner_kernel = kernel_8x48;

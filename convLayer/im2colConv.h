@@ -109,6 +109,7 @@ protected:
     float *transform_input_data;
     float *padding_input_data;
     float *output_data_ref = NULL;
+    float *packB_buffer[4];
 
     static const int GEMM_NO_BLOCKS = 0;
     static const int GEMM_BLOCKS_SINGLE_THREAD = 1;
@@ -130,6 +131,9 @@ protected:
     void select_tuning_range_for_mnk(size_t&, size_t&, int&, int&, int&, int&, int&, int&, int&, int&, int&);
     void select_tuning_range_for_pack(int&, int&, int&, int&, int&, int&);
     void select_tuning_range_for_prefetch(int&, int&, int&, int&, int&, int&, int&, int&, int&);
+
+    void alloc_packB_buffer();
+    void release_packB_buffer();
 
     bool search_log_file_and_entry(const char *log_path);
     void search_best_param(int &best_mc, int &best_nc, int &best_kc, int &best_rb, int &best_cb, int &best_pc, int &best_pb, int &best_pre_a, int &best_pre_b, int &best_pre_c, int &mc_pw, int &nc_pw);

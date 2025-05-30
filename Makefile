@@ -34,7 +34,7 @@ else
 	CXX = FCC
 #	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kprefetch_stride=soft -Kprefetch_indirect -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=19 -Kzfill=9 -Kswp
 	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -O3 -Nfjomplib -fopenmp -Kfast,zfill -Kopenmp -Ksimd_reg_size=512
-	LD_FLAGS  = -Kfast,zfill -Kopenmp -Nfjomplib
+	LD_FLAGS  = -Kfast,zfill -Kopenmp -Nfjomplib -lnuma
 
 #	CXX = FCC
 #	CXX_FLAGS = -std=c++11 $(DEFS) -I$(PWD) -Kfast -Kopenmp -Nlibomp -Kswp

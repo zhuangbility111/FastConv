@@ -1,0 +1,232 @@
+Fujitsu C/C++ Version 4.6.1   Tue Oct 12 15:40:59 2021
+Compilation information
+  Current directory : /vol0004/ra000012/a04453/FastConv
+  Source file       : ./utility/common.cpp
+(line-no.)(optimize)
+        1             //Tencent is pleased to support the open source community by making FeatherCNN available.
+        2             
+        3             //Copyright (C) 2018 THL A29 Limited, a Tencent company. All rights reserved.
+        4             
+        5             //Licensed under the BSD 3-Clause License (the "License"); you may not use this file except
+        6             //in compliance with the License. You may obtain a copy of the License at
+        7             //
+        8             //https://opensource.org/licenses/BSD-3-Clause
+        9             //
+       10             //Unless required by applicable law or agreed to in writing, software distributed
+       11             //under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+       12             //CONDITIONS OF ANY KIND, either express or implied. See the License for the
+       13             //specific language governing permissions and limitations under the License.
+       14             
+       15             #include "common.h"
+       16             #include <cstring>
+       17             #include <vector>
+       18             #include <cstdlib>
+       19             #include <dirent.h>
+       20             
+       21             int min(int a, int b)
+       22             {
+       23                 return (a < b) ? a : b;
+       24             }
+       25             
+       26             void* _mm_malloc(size_t sz, size_t align)
+       27             {
+       28                 void *ptr;
+       29             #ifdef __APPLE__
+       30                 return malloc(sz);
+       31             #else
+       32                 int alloc_result = posix_memalign(&ptr, align, sz);
+       33                 if (alloc_result != 0)
+       34                 {
+       35                     return NULL;
+       36                 }
+       37                 return ptr;
+       38             #endif
+       39             }
+       40             
+       41             void _mm_free(void* ptr)
+       42             {
+       43                 if (NULL != ptr)
+       44                 {
+       45                     free(ptr);
+       46                     ptr = NULL;
+       47                 }
+       48             }
+       49             
+       50             // 向上对齐
+       51             int align_ceil(int num, int align)
+       52             {
+       53                 return num + (align - (num % align)) % align;
+       54             }
+       55             
+       56             int get_cache_info(size_t &l1_cache_size_per_core, size_t &l2_cache_size_per_core) {
+       57             #ifdef __APPLE__
+       58                 FILE* fp;
+       59                 int config;
+       60                 size_t size;
+       61                 std::vector<int> cache_config;
+       62                 std::vector<size_t> cache_size;
+       63                 if ((fp = popen("sysctl -n hw.cacheconfig", "r")) != nullptr)
+       64                     while (fscanf(fp, "%d", &config) != -1 && config != 0) {
+       65                         cache_config.push_back(config);
+       66                     }
+       67                 else 
+       68                     printf("get cacheconfig error!\n");
+       69                 pclose(fp);
+       70                 if ((fp = popen("sysctl -n hw.cachesize", "r")) != nullptr)
+       71                     while (fscanf(fp, "%u", &size) != -1 && size != 0)
+       72                         cache_size.push_back(size);
+       73                 else
+       74                     printf("get cachesize error!\n");
+       75                 pclose(fp);
+       76             
+       77                 int cache_idx = cache_config.size() - 1;
+       78                 if (cache_idx >= 1) {
+       79                     l2_cache_size_per_core = cache_size[cache_idx] / static_cast<size_t>(cache_config[cache_idx]);
+       80                     l1_cache_size_per_core = cache_size[cache_idx - 1] / static_cast<size_t>(cache_config[cache_idx - 1]);
+       81                     printf("%u\n", l2_cache_size_per_core);
+       82                     printf("%u\n", l1_cache_size_per_core);
+       83                 } else if (cache_idx == 0) {
+       84                     l2_cache_size_per_core = 0;
+       85                     l1_cache_size_per_core = cache_size[cache_idx] / static_cast<size_t>(cache_config[cache_idx]);
+       86                 } else {
+       87                     l2_cache_size_per_core = 0;
+       88                     l1_cache_size_per_core = 0;
+       89                 }
+       90                 return 1;
+       91             #else
+       92                 size_t l1_cache_size = 0;
+       93                 size_t l2_cache_size = 0;
+       94                 const char *path = "/sys/devices/system/cpu/cpu0/cache";
+       95                 char child_path[256];
+       96                 char cache_info_file[256];
+       97                 DIR *directory_ptr;
+       98                 DIR *child_directory_ptr;
+       99                 struct dirent *entry;
+      100                 struct dirent *child_entry;
+      101                 struct CacheInfo cache_info;
+      102                 directory_ptr = opendir(path);
+      103                 if (directory_ptr == nullptr) {
+      104                     printf("The cache file dosen't exist.\n");
+      105                     return -1;
+      106                 }
+      107                 while ((entry = readdir(directory_ptr)) != nullptr) {   // traverse all cache level
+      108                     if (entry->d_type & DT_DIR) {
+      109                         if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+      110                             memset(child_path, 0, sizeof(child_path));
+      111                             sprintf(child_path,"%s/%s", path, entry->d_name);
+      112                             child_directory_ptr = opendir(child_path);
+      113                             if (child_directory_ptr == nullptr) {
+      114                                 printf("The cache file dosen't exist.\n");
+      115                                 return -1;
+      116                             } 
+      117                             char type[20];
+      118                             char shared_cpu_list[20];
+      119                             FILE *fp;
+      120                             cache_info.level = 0;
+      121                             cache_info.size  = 0;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    SPILLS :
+                       <<<      GENERAL   : SPILL 1  FILL 2
+                       <<<      SIMD&FP   : SPILL 0  FILL 0
+                       <<<      SCALABLE  : SPILL 0  FILL 0
+                       <<<      PREDICATE : SPILL 0  FILL 0
+                       <<< Loop-information  End >>>
+      122          s                  while ((child_entry = readdir(child_directory_ptr)) != nullptr) {   // traverse all param of a cache level
+      123          s                      if (!(child_entry->d_type & DT_DIR)) {
+      124          s                          if (strcmp(child_entry->d_name, "level") == 0) {    // level
+      125          s                              memset(cache_info_file, 0, sizeof(cache_info_file));
+      126          s                              sprintf(cache_info_file, "%s/%s", child_path, child_entry->d_name);
+      127          s                              if ((fp = fopen(cache_info_file, "r")) != nullptr)
+      128          s                                  int res = fscanf(fp, "%d", &(cache_info.level));
+      129          s                              fclose(fp);
+      130          s                          } else if (strcmp(child_entry->d_name, "size") == 0) {  // cache size
+      131          s                              memset(cache_info_file, 0, sizeof(cache_info_file));
+      132          s                              sprintf(cache_info_file, "%s/%s", child_path, child_entry->d_name);
+      133          s                              if ((fp = fopen(cache_info_file, "r")) != nullptr)
+      134          s                                  int res = fscanf(fp, "%d", &(cache_info.size));
+      135          s                              fclose(fp);
+      136          s                          } else if (strcmp(child_entry->d_name, "type") == 0) {  // cache type(data, instructions or unified)
+      137          s                              memset(cache_info_file, 0, sizeof(cache_info_file));
+      138          s                              memset(cache_info.type, 0, sizeof(cache_info.type));
+      139          s                              sprintf(cache_info_file, "%s/%s", child_path, child_entry->d_name);
+      140          s                              if ((fp = fopen(cache_info_file, "r")) != nullptr)
+      141          s                                  int res = fscanf(fp, "%s", (cache_info.type));
+      142          s                              fclose(fp);
+      143          s                          } else if (strcmp(child_entry->d_name, "shared_cpu_list") == 0) {   // shared core
+      144          s                              memset(cache_info_file, 0, sizeof(cache_info_file));
+      145          s                              sprintf(cache_info_file, "%s/%s", child_path, child_entry->d_name);
+      146          s                              if ((fp = fopen(cache_info_file, "r")) != nullptr) {
+      147          s                                  int res = fscanf(fp, "%s", shared_cpu_list);
+      148          s                                  char* p = strtok(shared_cpu_list, "-");
+      149          s                                  int begin = 0, end = 0;
+      150          s                                  if (p != nullptr) {
+      151    i     s                                      begin = atoi(p);
+      152          s                                      p = strtok(nullptr, "-");
+      153          s                                      if (p != nullptr) {
+      154    i     s                                          end = atoi(p);
+      155          s                                      }
+      156          s                                  }
+      157          s                                  cache_info.num_shared_core = abs(end - begin) + 1;
+      158          s                              }
+      159          s                              fclose(fp);
+      160          s                          }
+      161          s                      }
+      162          s                  }
+      163                             if (strcmp(type, "Instruction") != 0) {
+      164                                 if (cache_info.level == 1) {
+      165                                     if (cache_info.size == 0)
+      166                                         cache_info.size = 32;
+      167                                     l1_cache_size = cache_info.size * 1024;
+      168                                     l1_cache_size_per_core = l1_cache_size / (size_t)cache_info.num_shared_core;
+      169                                 } else if (cache_info.level == 2) {
+      170                                     if (cache_info.size == 0)
+      171                                         cache_info.size = 512;
+      172                                     l2_cache_size = cache_info.size * 1024;
+      173                                     l2_cache_size_per_core = l2_cache_size / (size_t)cache_info.num_shared_core;
+      174                                 }
+      175                             }
+      176                         }
+      177                     }
+      178                 }
+      179                 return 1;
+      180             #endif
+      181             }
+Total prefetch num: 0
+Statistics information
+  Option information
+    Command line options : -c -std=c++11 -I/vol0004/ra000012/a04453/FastConv -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp -Nlst=t -o obj/./utility/common.o
+    Effective options    : -g0 -mt -Qy -std=gnu++11 -x- -x=quick -O3 -Knoalias_const
+                           -Kalign_loops -Knoarray_declaration_opt -Kassume=noshortloop
+                           -Kassume=nomemory_bandwidth -Kassume=notime_saving_compilation
+                           -Kcmodel=small -Keval -Keval_noconcurrent
+                           -Knoextract_stride_store -Kfast_matmul -Knofenv_access
+                           -Kfp_contract -Kfp_relaxed -Kfsimple -Kfz -Khpctag
+                           -Kilfunc=procedure -Klargepage -Klib -Kloop_blocking
+                           -Kloop_fission -Kloop_nofission_stripmining
+                           -Kloop_fission_threshold=50 -Kloop_fusion -Kloop_interchange
+                           -Kloop_part_simd -Kloop_perfect_nest -Kloop_noversioning
+                           -Klooptype=f -Knomemalias -Kmfunc=1 -Knoocl -Komitfp -Kopenmp
+                           -Kopenmp_noassume_norecurrence
+                           -Kopenmp_nocollapse_except_innermost
+                           -Kopenmp_loop_variable=private -Kopenmp_noordered_reduction
+                           -Knoopenmp_simd -Knooptlib_string -Knooptmsg
+                           -Knopc_relative_literal_loads -Knoparallel
+                           -Kparallel_nofp_precision -Knopreex -Kprefetch_cache_level=all
+                           -Kprefetch_noconditional -Kprefetch_noindirect -Kprefetch_noinfer
+                           -Kprefetch_line=2 -Kprefetch_line_L2=10
+                           -Kprefetch_sequential=soft -Kprefetch_nostride -Kprefetch_strong
+                           -Kprefetch_strong_L2 -Knopreload -Krdconv=1
+                           -Kremove_inlinefunction -Knorestp -Ksch_post_ra -Ksch_pre_ra
+                           -Ksibling_calls -Ksimd=auto -Ksimd_packed_promotion
+                           -Ksimd_reduction_product -Ksimd_reg_size=512
+                           -Ksimd_nouncounted_loop -Ksimd_use_multiple_structures
+                           -Knostrict_aliasing -Knostriping -KA64FX -KARMV8_3_A -KSVE -Kswp
+                           -Kswp_freg_rate=100 -Kswp_ireg_rate=100 -Kswp_preg_rate=100
+                           -Kswp_policy=auto -Kunroll -Knounroll_and_jam -Kzfill=9
+                           -Ncancel_overtime_compilation -Nnocoverage -Nexceptions -Nnofjcex
+                           -Nfjprof -Nnohook_func -Nnohook_time -Nlibomp -Nline -Nlst=p
+                           -Nlst=t -Nquickdbg=noheapchk -Nquickdbg=nosubchk -NRnotrap
+                           -Nnoreordered_variable_stack -Nrt_notune -Nsetvalue=noheap
+                           -Nsetvalue=nostack -Nsetvalue=noscalar -Nsetvalue=noarray
+                           -Nsetvalue=nostruct -Nsrc -Nsta

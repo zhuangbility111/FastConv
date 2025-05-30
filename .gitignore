@@ -1,0 +1,11 @@
+.vscode
+profiling
+result*
+obj
+*.log
+*.xml
+*.csv
+*log
+*.err
+*.out
+*.stats

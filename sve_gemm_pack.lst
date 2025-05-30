@@ -1,0 +1,275 @@
+Fujitsu C/C++ Version 4.6.1   Tue Oct 12 15:41:10 2021
+Compilation information
+  Current directory : /vol0004/ra000012/a04453/FastConv
+  Source file       : ./im2col/SVE/sve_gemm_pack.cpp
+(line-no.)(optimize)
+        1             #include <stdlib.h>
+        2             #include <assert.h>
+        3             #include <stdio.h>
+        4             #include <omp.h>
+        5             #include "../../utility/common.h"
+        6             
+        7             #include <arm_sve.h>
+        8             
+        9             #define min(i, j) ((i) < (j) ? (i): (j))
+       10             // #define __ARM_ASM
+       11             
+       12             // 对 M x kc 做8行packing
+       13             void pack_a_v2(int M, int kc_adjust, float* A, int lda, float* packA, int mc, int kc, int nc, const int ROW_BATCH, const int COL_BATCH) 
+       14             {
+       15                 float* aPtr = A, *packAPtr = packA;
+       16                 
+       17                 // 每次处理一个panel
+       18                 for (int i = 0; i < M; i += mc)
+       19                 {
+       20                     // 确定一个Penel的高度
+       21                     int m_len = min(mc, M - i);
+       22                     int remainRowStart = m_len - m_len % ROW_BATCH;
+       23                     // 对panel内部进行packing，每次对panel内部的 ROW_BATCH 行进行处理
+       24                     int m = 0;
+       25                     for (; m < remainRowStart; m += ROW_BATCH)
+       26                     {
+       27                         aPtr = A + (i + m) * lda;
+       28                         // 每次处理panel内部的 ROW_BATCH 行1列
+       29                         for (int k = 0; k < kc_adjust; k++)
+       30                         {
+       31                             int aPtrIdx = 0;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 2
+                       <<<     SEQUENTIAL : 2
+                       <<<      (unknown): 2
+                       <<< Loop-information  End >>>
+       32         4s                  for (int j = 0; j < ROW_BATCH; j++)
+       33         4s                  {
+       34         4s                      packAPtr[j] = aPtr[aPtrIdx];
+       35         4s                      aPtrIdx += lda;
+       36         4s                  }
+       37                             packAPtr += ROW_BATCH;
+       38                             aPtr++;
+       39                         }
+       40                     }
+       41             
+       42                     aPtr = A + (i + remainRowStart) * lda;
+       43                     // 如果剩余不足 ROW_BATCH 行，直接处理
+       44                     int remainRow = m_len - remainRowStart;
+       45                     // 每次处理panel内部的1列
+       46                     for (int k = 0; k < kc_adjust; k++)
+       47                     {
+       48                         int aPtrIdx = 0;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 2
+                       <<<     SEQUENTIAL : 2
+                       <<<      (unknown): 2
+                       <<< Loop-information  End >>>
+       49         4s              for (int j = 0; j < remainRow; j++)
+       50         4s              {
+       51         4s                  packAPtr[j] = aPtr[aPtrIdx];
+       52         4s                  aPtrIdx += lda;
+       53         4s              }
+       54                         packAPtr += remainRow;
+       55                         aPtr++;
+       56                     } 
+       57                 }
+       58             }
+       59             
+       60             // 对 kc x nc 做 COL_BATCH 列的packing
+       61             void pack_b_v2_12x32(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB, const int ROW_BATCH, const int COL_BATCH)
+       62             {
+       63                 float *BPtr, *packBPtr;
+       64                 int remainColStart = nc_adjust - nc_adjust % COL_BATCH;
+       65             
+       66                 // 每次处理B的一行
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 2
+                       <<<     SEQUENTIAL : 2
+                       <<<      (unknown): 2
+                       <<< Loop-information  End >>>
+       67                 for (int k = 0; k < kc_adjust; k++) {
+       68                     BPtr = B + ldb * k;
+       69                     packBPtr = packB + COL_BATCH * k;
+       70                     int step = COL_BATCH * kc_adjust;
+       71             
+       72                     svbool_t pg_all = svptrue_b32();
+       73             
+       74                     // 在B的一行中一次拷贝 COL_BATCH 个元素
+       75                     int j = 0;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+       76          s          for (; j < remainColStart; j += COL_BATCH) {
+       77             
+       78             #ifdef __ARM_ASM
+       79             
+       80             #else
+       81          s              svfloat32_t a0, a1;
+       82             
+       83          s              a0 = svld1_f32(pg_all, BPtr);
+       84          s              a1 = svld1_f32(pg_all, BPtr + 16);
+       85          s              svst1_f32(pg_all, packBPtr,      a0);
+       86          s              svst1_f32(pg_all, packBPtr + 16, a1);
+       87             #endif
+       88          s              BPtr += COL_BATCH;
+       89          s              packBPtr += step;
+       90          s          }
+       91             
+       92                     // 如果B的一行中还剩余几个（不足8个），直接拷贝，其他值直接设为0（相当于不足8个填充为8个）
+       93                     if (j < nc_adjust) {
+       94                         int remain = nc_adjust - j;
+       95                         packBPtr = packB + j * kc_adjust + COL_BATCH * k;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+       96         4s              for (int i = 0; i < remain; i++) {
+       97         4s                  packBPtr[i] = BPtr[i];
+       98                             // printf("_b_%f\n", BPtr[i]);
+       99                             // *packBPtr = *BPtr;
+      100                             // packBPtr++;
+      101                             // BPtr++;
+      102         4s              }
+      103             
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    SIMD(VL: 16)
+                       <<<    SOFTWARE PIPELINING(IPC: 1.80, ITR: 192, MVE: 2, POL: S)
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+      104         4v              for (int i = remain; i < COL_BATCH; i++) {
+      105         4v                  packBPtr[i] = 0.0f;
+      106                             // *packBPtr = 0.0f;
+      107                             // packBPtr++;
+      108         4v              }
+      109                     }
+      110                 }
+      111             }
+      112             
+      113             void pack_b_v2_4x64(int kc_adjust, int nc_adjust, float *B, int ldb, float *packB, const int ROW_BATCH, const int COL_BATCH)
+      114             {
+      115                 float *BPtr, *packBPtr;
+      116                 int remainColStart = nc_adjust - nc_adjust % COL_BATCH;
+      117             
+      118                 // 每次处理B的一行
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 2
+                       <<<     SEQUENTIAL : 2
+                       <<<      (unknown): 2
+                       <<< Loop-information  End >>>
+      119                 for (int k = 0; k < kc_adjust; k++) {
+      120                     BPtr = B + ldb * k;
+      121                     packBPtr = packB + COL_BATCH * k;
+      122                     int step = COL_BATCH * kc_adjust;
+      123             
+      124                     svbool_t pg_all = svptrue_b32();
+      125             
+      126                     // 在B的一行中一次拷贝 COL_BATCH 个元素
+      127                     int j = 0;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+      128          s          for (; j < remainColStart; j += COL_BATCH) {
+      129             
+      130             #ifdef __ARM_ASM
+      131             #else
+      132          s              svfloat32_t a0, a1, a2, a3;
+      133             
+      134          s              a0 = svld1_f32(pg_all, BPtr);
+      135          s              a1 = svld1_f32(pg_all, BPtr + 16);
+      136          s              a2 = svld1_f32(pg_all, BPtr + 32);
+      137          s              a3 = svld1_f32(pg_all, BPtr + 48);
+      138          s              svst1_f32(pg_all, packBPtr,      a0);
+      139          s              svst1_f32(pg_all, packBPtr + 16, a1);
+      140          s              svst1_f32(pg_all, packBPtr + 32, a2);
+      141          s              svst1_f32(pg_all, packBPtr + 48, a3);
+      142             
+      143             #endif
+      144          s              BPtr += COL_BATCH;
+      145          s              packBPtr += step;
+      146          s          }
+      147             
+      148                     // 如果B的一行中还剩余几个（不足8个），直接拷贝，其他值直接设为0（相当于不足8个填充为8个）
+      149                     if (j < nc_adjust) {
+      150                         int remain = nc_adjust - j;
+      151                         packBPtr = packB + j * kc_adjust + COL_BATCH * k;
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+      152         4s              for (int i = 0; i < remain; i++) {
+      153         4s                  packBPtr[i] = BPtr[i];
+      154                             // printf("_b_%f\n", BPtr[i]);
+      155                             // *packBPtr = *BPtr;
+      156                             // packBPtr++;
+      157                             // BPtr++;
+      158         4s              }
+      159             
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    SIMD(VL: 16)
+                       <<<    SOFTWARE PIPELINING(IPC: 1.80, ITR: 192, MVE: 2, POL: S)
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+      160         4v              for (int i = remain; i < COL_BATCH; i++) {
+      161         4v                  packBPtr[i] = 0.0f;
+      162                             // *packBPtr = 0.0f;
+      163                             // packBPtr++;
+      164         4v              }
+      165                     }
+      166                 }
+      167             }
+      168             
+Total prefetch num: 32
+Statistics information
+  Option information
+    Command line options : -c -std=c++11 -I/vol0004/ra000012/a04453/FastConv -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp -Nlst=t -o obj/./im2col/SVE/sve_gemm_pack.o
+    Effective options    : -g0 -mt -Qy -std=gnu++11 -x- -x=quick -O3 -Knoalias_const
+                           -Kalign_loops -Knoarray_declaration_opt -Kassume=noshortloop
+                           -Kassume=nomemory_bandwidth -Kassume=notime_saving_compilation
+                           -Kcmodel=small -Keval -Keval_noconcurrent
+                           -Knoextract_stride_store -Kfast_matmul -Knofenv_access
+                           -Kfp_contract -Kfp_relaxed -Kfsimple -Kfz -Khpctag
+                           -Kilfunc=procedure -Klargepage -Klib -Kloop_blocking
+                           -Kloop_fission -Kloop_nofission_stripmining
+                           -Kloop_fission_threshold=50 -Kloop_fusion -Kloop_interchange
+                           -Kloop_part_simd -Kloop_perfect_nest -Kloop_noversioning
+                           -Klooptype=f -Knomemalias -Kmfunc=1 -Knoocl -Komitfp -Kopenmp
+                           -Kopenmp_noassume_norecurrence
+                           -Kopenmp_nocollapse_except_innermost
+                           -Kopenmp_loop_variable=private -Kopenmp_noordered_reduction
+                           -Knoopenmp_simd -Knooptlib_string -Knooptmsg
+                           -Knopc_relative_literal_loads -Knoparallel
+                           -Kparallel_nofp_precision -Knopreex -Kprefetch_cache_level=all
+                           -Kprefetch_noconditional -Kprefetch_noindirect -Kprefetch_noinfer
+                           -Kprefetch_line=2 -Kprefetch_line_L2=10
+                           -Kprefetch_sequential=soft -Kprefetch_nostride -Kprefetch_strong
+                           -Kprefetch_strong_L2 -Knopreload -Krdconv=1
+                           -Kremove_inlinefunction -Knorestp -Ksch_post_ra -Ksch_pre_ra
+                           -Ksibling_calls -Ksimd=auto -Ksimd_packed_promotion
+                           -Ksimd_reduction_product -Ksimd_reg_size=512
+                           -Ksimd_nouncounted_loop -Ksimd_use_multiple_structures
+                           -Knostrict_aliasing -Knostriping -KA64FX -KARMV8_3_A -KSVE -Kswp
+                           -Kswp_freg_rate=100 -Kswp_ireg_rate=100 -Kswp_preg_rate=100
+                           -Kswp_policy=auto -Kunroll -Knounroll_and_jam -Kzfill=9
+                           -Ncancel_overtime_compilation -Nnocoverage -Nexceptions -Nnofjcex
+                           -Nfjprof -Nnohook_func -Nnohook_time -Nlibomp -Nline -Nlst=p
+                           -Nlst=t -Nquickdbg=noheapchk -Nquickdbg=nosubchk -NRnotrap
+                           -Nnoreordered_variable_stack -Nrt_notune -Nsetvalue=noheap
+                           -Nsetvalue=nostack -Nsetvalue=noscalar -Nsetvalue=noarray
+                           -Nsetvalue=nostruct -Nsrc -Nsta

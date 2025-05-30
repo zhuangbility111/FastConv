@@ -1,0 +1,479 @@
+Fujitsu C/C++ Version 4.6.1   Tue Oct 12 15:41:02 2021
+Compilation information
+  Current directory : /vol0004/ra000012/a04453/FastConv
+  Source file       : ConvTest.cpp
+(line-no.)(optimize)
+        1             //#include "winograd_kernels.h"
+        2             //#include "winograd_kernels_F63.h"
+        3             #include <stdlib.h>
+        4             #include <time.h>
+        5             #include <string.h>
+        6             // #include "./winoF63/winoF63.h"
+        7             #include <math.h>
+        8             #include "./conv_layer.h"
+        9             #include "./ncnn/ConvKernels.h"
+       10             #include "./convLayer/naiveConv.h"
+       11             #include "./convLayer/naiveNCNNConv.h"
+       12             // #include "./convLayer/winoF63Conv.h"
+       13             #include "./convLayer/im2colConv.h"
+       14             #include "./convLayer/winoF63ConvZC.h"
+       15             #include "./utility/helper.h"
+       16             
+       17             void fillTestInput(float* target, int inChannels, nnp_size inputDim){
+       18                 float* pChannel = target;
+       19                 for(int i = 0; i < inChannels; ++i){
+       20             	    float value = 1.0f;
+       21                 	for(int m = 0; m < inputDim.height; ++m){
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 4
+                       <<<     SEQUENTIAL : 4
+                       <<<      (unknown): 4
+                       <<< Loop-information  End >>>
+       22                         for(int n = 0; n < inputDim.width; ++n){
+       23                         //    value += 1.0f;
+       24                             value =  256 *rand() / double(RAND_MAX);
+       25                             *(pChannel++) = value;
+       26                         }
+       27                     }
+       28                 }
+       29             }
+       30             
+       31             void fillTestKernel(float* target, int inChannels, int outChannels, nnp_size kernelDim){
+       32                 float* pChannel = target;
+       33                     for(int j = 0; j < outChannels; ++j){
+       34                 		for(int i = 0; i < inChannels; ++i){
+       35             				float value = 1.f;
+       36             				for(int m = 0; m < kernelDim.height; ++m){
+                       <<< Loop-information Start >>>
+                       <<<  [OPTIMIZATION]
+                       <<<    PREFETCH(SOFT) : 2
+                       <<<     SEQUENTIAL : 2
+                       <<<      (unknown): 2
+                       <<< Loop-information  End >>>
+       37             					for(int n = 0; n < kernelDim.width; ++n){
+       38             					//    value += 0.1f;
+       39             						value =  1.0* rand() / double(RAND_MAX);
+       40             						*(pChannel++) = value;
+       41             					}
+       42             				}
+       43                     }
+       44                 }
+       45             }
+       46             
+       47             void printMatrix(float* matrix, int row, int col)
+       48             {
+       49             	printf("--------------\n");
+       50             	for(int i=0;i<row;i++)	
+       51             	{
+       52         2   		for(int j=0;j<col;j++)
+       53         2   			printf("%3.3f ", *(matrix+i*col+j));
+       54             		printf("\n");
+       55             	}
+       56             }
+       57             
+       58             struct options {
+       59             	size_t input_channels;
+       60             	size_t output_channels;
+       61             	struct nnp_size input_size;
+       62             	size_t input_padding;
+       63             	struct nnp_size kernel_size;
+       64             	struct nnp_size output_subsampling;
+       65             	enum nnp_convolution_algorithm algorithm;
+       66             	enum nnp_convolution_transform_strategy transform_strategy;
+       67             	enum nnp_convolution_tuning_strategy tuning_strategy;
+       68             	size_t threads;
+       69             	size_t iterations;
+       70             };
+       71             
+       72             void print_options_help(const char* program_name) {
+       73             	printf(
+       74                     "%s parameters...\n"
+       75                     "Required parameters:\n"
+       76                     "  -ic  --input-channels     The number of input channels\n"
+       77                     "  -oc  --output-channels    The number of output channels\n"
+       78                     "  -is  --input-size         Input height and width\n"
+       79                     "  -ks  --kernel-size        Kernel height and width\n"
+       80                     "Optional parameters:\n"
+       81                     "  -a   --algorithm          The algorithm (auto, direct, im2col, or winograd) for computing convolution (default: auto)\n"
+       82                     "  -ts  --transform-strategy The transformation strategy (online, or offline) for kernel transformation (default: online)\n"
+       83                     "  -s   --output-subsampling The size of a output subsampling region, AKA stride (default: 1x1)\n"
+       84                     "  -ip  --input-padding      Implicit input padding (default: 1)\n"
+       85             		"  -tn  --tuning             whether to tuning (default: no_tuning)\n"
+       86                     "  -t   --threads            The number of threads (default: 1)\n"
+       87                     "  -i   --iterations         # iterations (default: 10)\n",
+       88             	program_name);
+       89             }
+       90             
+       91             struct options parse_options(int argc, char** argv) {
+       92             	struct options options = {
+       93             		.input_channels = 0,
+       94             		.output_channels = 0,
+       95             		.input_size = { 0, 0 },
+       96             		.input_padding = 1,
+       97             		.kernel_size = { 0, 0 },
+       98             		.output_subsampling = { 1, 1 },
+       99             		.algorithm = nnp_convolution_algorithm_auto,
+      100             		.transform_strategy = nnp_convolution_transform_strategy_online,
+      101             		.tuning_strategy = nnp_convolution_tuning_strategy_no_tuning,
+      102             		.threads = 1,
+      103             		.iterations = 10
+      104             	};
+      105             
+      106             	for (int i = 1; i < argc; i += 1) {
+      107             	    if ((strcmp(argv[i], "--input-channels") == 0) || (strcmp(argv[i], "-ic") == 0)) {
+      108             			if (i + 1 == argc) {
+      109             				fprintf(stderr, "Error: expected input channels value\n");
+      110             				exit(EXIT_FAILURE);
+      111             			}
+      112             			if (sscanf(argv[i + 1], "%zu", &options.input_channels) != 1) {
+      113             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      114             				exit(EXIT_FAILURE);
+      115             			}
+      116             			if (options.input_channels == 0) {
+      117             				fprintf(stderr, "Error: invalid value %s for the number of input channels: positive value expected\n", argv[i + 1]);
+      118             				exit(EXIT_FAILURE);
+      119             			}
+      120             			i += 1;
+      121             		} else if ((strcmp(argv[i], "--output-channels") == 0) || (strcmp(argv[i], "-oc") == 0)) {
+      122             			if (i + 1 == argc) {
+      123             				fprintf(stderr, "Error: expected output channels value\n");
+      124             				exit(EXIT_FAILURE);
+      125             			}
+      126             			if (sscanf(argv[i + 1], "%zu", &options.output_channels) != 1) {
+      127             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      128             				exit(EXIT_FAILURE);
+      129             			}
+      130             			if (options.output_channels == 0) {
+      131             				fprintf(stderr, "Error: invalid value %s for the number of output channels: positive value expected\n", argv[i + 1]);
+      132             				exit(EXIT_FAILURE);
+      133             			}
+      134             			i += 1;
+      135             		} else if ((strcmp(argv[i], "--input-size") == 0) || (strcmp(argv[i], "-is") == 0)) {
+      136             			if (argc - i < 2) {
+      137             				fprintf(stderr, "Error: expected two input size values\n");
+      138             				exit(EXIT_FAILURE);
+      139             			}
+      140             			if (sscanf(argv[i + 1], "%zu", &options.input_size.height) != 1) {
+      141             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      142             				exit(EXIT_FAILURE);
+      143             			}
+      144             			if (options.input_size.height == 0) {
+      145             				fprintf(stderr, "Error: invalid value %s for the input height: positive value expected\n", argv[i + 1]);
+      146             				exit(EXIT_FAILURE);
+      147             			}
+      148             			if (sscanf(argv[i + 2], "%zu", &options.input_size.width) != 1) {
+      149             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 2]);
+      150             				exit(EXIT_FAILURE);
+      151             			}
+      152             			if (options.input_size.width == 0) {
+      153             				fprintf(stderr, "Error: invalid value %s for the input width: positive value expected\n", argv[i + 2]);
+      154             				exit(EXIT_FAILURE);
+      155             			}
+      156             			i += 2;
+      157             		} else if ((strcmp(argv[i], "--kernel-size") == 0) || (strcmp(argv[i], "-ks") == 0)) {
+      158             			if (argc - i < 2) {
+      159             				fprintf(stderr, "Error: expected two kernel size values\n");
+      160             				exit(EXIT_FAILURE);
+      161             			}
+      162             			if (sscanf(argv[i + 1], "%zu", &options.kernel_size.height) != 1) {
+      163             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      164             				exit(EXIT_FAILURE);
+      165             			}
+      166             			if (options.kernel_size.height == 0) {
+      167             				fprintf(stderr, "Error: invalid value %s for the kernel height: positive value expected\n", argv[i + 1]);
+      168             				exit(EXIT_FAILURE);
+      169             			}
+      170             			if (sscanf(argv[i + 2], "%zu", &options.kernel_size.width) != 1) {
+      171             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 2]);
+      172             				exit(EXIT_FAILURE);
+      173             			}
+      174             			if (options.kernel_size.width == 0) {
+      175             				fprintf(stderr, "Error: invalid value %s for the kernel width: positive value expected\n", argv[i + 2]);
+      176             				exit(EXIT_FAILURE);
+      177             			}
+      178             			i += 2;
+      179             		} else if ((strcmp(argv[i], "--input-padding") == 0) || (strcmp(argv[i], "-ip") == 0)) {
+      180             			if (i + 1 == argc) {
+      181             				fprintf(stderr, "Error: expected padding value\n");
+      182             				exit(EXIT_FAILURE);
+      183             			}
+      184             			if (sscanf(argv[i + 1], "%zu", &options.input_padding) != 1) {
+      185             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      186             				exit(EXIT_FAILURE);
+      187             			}
+      188             			i += 1;
+      189             		} else if ((strcmp(argv[i], "--output-subsampling") == 0) || (strcmp(argv[i], "-s") == 0)) {
+      190             			if (argc - i < 2) {
+      191             				fprintf(stderr, "Error: expected two output subsampling values\n");
+      192             				exit(EXIT_FAILURE);
+      193             			}
+      194             			if (sscanf(argv[i + 1], "%zu", &options.output_subsampling.height) != 1) {
+      195             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      196             				exit(EXIT_FAILURE);
+      197             			}
+      198             			if (options.output_subsampling.height == 0) {
+      199             				fprintf(stderr, "Error: invalid value %s for the output subsampling height: positive value expected\n", argv[i + 1]);
+      200             				exit(EXIT_FAILURE);
+      201             			}
+      202             			if (sscanf(argv[i + 2], "%zu", &options.output_subsampling.width) != 1) {
+      203             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 2]);
+      204             				exit(EXIT_FAILURE);
+      205             			}
+      206             			if (options.output_subsampling.width == 0) {
+      207             				fprintf(stderr, "Error: invalid value %s for the output subsampling width: positive value expected\n", argv[i + 2]);
+      208             				exit(EXIT_FAILURE);
+      209             			}
+      210             			i += 2;
+      211             		} else if ((strcmp(argv[i], "--algorithm") == 0) || (strcmp(argv[i], "-a") == 0)) {
+      212             			if (i + 1 == argc) {
+      213             				fprintf(stderr, "Error: expected convolution algorithm name\n");
+      214             				exit(EXIT_FAILURE);
+      215             			}
+      216             			if (strcmp(argv[i + 1], "auto") == 0) {
+      217             				options.algorithm = nnp_convolution_algorithm_auto;
+      218             			} else if (strcmp(argv[i + 1], "direct") == 0) {
+      219             				options.algorithm = nnp_convolution_algorithm_direct;
+      220                         } else if (strcmp(argv[i + 1], "im2col") == 0) {
+      221             				options.algorithm = nnp_convolution_algorithm_im2col;
+      222                         } else if (strcmp(argv[i + 1], "winograd") == 0) {
+      223             				options.algorithm = nnp_convolution_algorithm_winograd;
+      224             			} else {
+      225             				fprintf(stderr, "Error: invalid convolution algorithm name %s\n", argv[i + 1]);
+      226             				exit(EXIT_FAILURE);
+      227             			}
+      228             			i += 1;
+      229             		} else if ((strcmp(argv[i], "--transform-strategy") == 0) || (strcmp(argv[i], "-ts") == 0)) {
+      230             			if (i + 1 == argc) {
+      231             				fprintf(stderr, "Error: expected transformation strategy name\n");
+      232             				exit(EXIT_FAILURE);
+      233             			}
+      234             			if (strcmp(argv[i + 1], "online") == 0) {
+      235             				options.transform_strategy = nnp_convolution_transform_strategy_online;
+      236             			} else if (strcmp(argv[i + 1], "offline") == 0) {
+      237             				options.transform_strategy = nnp_convolution_transform_strategy_offline;
+      238             			} else {
+      239             				fprintf(stderr, "Error: invalid trasnformation strategy name %s\n", argv[i + 1]);
+      240             				exit(EXIT_FAILURE);
+      241             			}
+      242             			i += 1;
+      243             		} else if ((strcmp(argv[i], "--threads") == 0) || (strcmp(argv[i], "-t") == 0)) {
+      244             			if (i + 1 == argc) {
+      245             				fprintf(stderr, "Error: expected number of threads value\n");
+      246             				exit(EXIT_FAILURE);
+      247             			}
+      248             			if (sscanf(argv[i + 1], "%zu", &options.threads) != 1) {
+      249             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      250             				exit(EXIT_FAILURE);
+      251             			}
+      252             			if (options.threads == 0) {
+      253             				fprintf(stderr, "Error: invalid value %s for the number of threads: positive value expected\n", argv[i + 1]);
+      254             				exit(EXIT_FAILURE);
+      255             			}
+      256             			i += 1;
+      257             		} else if ((strcmp(argv[i], "--iterations") == 0) || (strcmp(argv[i], "-i") == 0)) {
+      258             			if (i + 1 == argc) {
+      259             				fprintf(stderr, "Error: expected iterations value\n");
+      260             				exit(EXIT_FAILURE);
+      261             			}
+      262             			if (sscanf(argv[i + 1], "%zu", &options.iterations) != 1) {
+      263             				fprintf(stderr, "Error: can not parse %s as an unsigned integer\n", argv[i + 1]);
+      264             				exit(EXIT_FAILURE);
+      265             			}
+      266             			if (options.iterations == 0) {
+      267             				fprintf(stderr, "Error: invalid value %s for the number of iterations: positive value expected\n", argv[i + 1]);
+      268             				exit(EXIT_FAILURE);
+      269             			}
+      270             			i += 1;
+      271             		} else if ((strcmp(argv[i], "--tuning") == 0) || (strcmp(argv[i], "-tn") == 0)) {
+      272             			if (i + 1 == argc) {
+      273             				fprintf(stderr, "Error: expected iterations value\n");
+      274             				exit(EXIT_FAILURE);
+      275             			} 
+      276             			if (strcmp(argv[i + 1], "no_tuning") == 0) {
+      277             				options.tuning_strategy = nnp_convolution_tuning_strategy_no_tuning;
+      278             			} else if (strcmp(argv[i + 1], "tuning") == 0) {
+      279             				options.tuning_strategy = nnp_convolution_tuning_strategy_grid_search;
+      280             			} else {
+      281             				fprintf(stderr, "Error: invalid tuning name %s\n", argv[i + 1]);
+      282             				exit(EXIT_FAILURE);
+      283             			}
+      284             			i += 1;
+      285             		} else if ((strcmp(argv[i], "--help") == 0) || (strcmp(argv[i], "-h") == 0)) {
+      286    i        			print_options_help(argv[0]);
+      287             			exit(EXIT_SUCCESS);
+      288             		} else {
+      289             			fprintf(stderr, "Error: unknown argument '%s'\n", argv[i]);
+      290    i        			print_options_help(argv[0]);
+      291             			exit(EXIT_FAILURE);
+      292             		}
+      293             	}
+      294             	if (options.input_channels == 0) {
+      295             		fprintf(stderr, "Error: the number of input channels is not specified\n");
+      296    i        		print_options_help(argv[0]);
+      297             		exit(EXIT_FAILURE);
+      298             	}
+      299             	if (options.output_channels == 0) {
+      300             		fprintf(stderr, "Error: the number of output channels is not specified\n");
+      301    i        		print_options_help(argv[0]);
+      302             		exit(EXIT_FAILURE);
+      303             	}
+      304             	if (options.input_size.width == 0) {
+      305             		fprintf(stderr, "Error: the input size is not specified\n");
+      306    i        		print_options_help(argv[0]);
+      307             		exit(EXIT_FAILURE);
+      308             	}
+      309             	if (options.kernel_size.width == 0) {
+      310             		fprintf(stderr, "Error: the kernel size is not specified\n");
+      311    i        		print_options_help(argv[0]);
+      312             		exit(EXIT_FAILURE);
+      313             	}
+      314             	return options;
+      315             }
+      316             
+      317             enum nnp_convolution_algorithm select_algorithm(struct nnp_size kernel_size, struct nnp_size output_subsampling, struct nnp_size output_size) {
+      318    i        	if (std::max(output_subsampling.height, output_subsampling.width) == 1) {
+      319             		// Stride-1 convolution: consider fast convolution algorithm and direct 1x1
+      320    i        		if (std::max(kernel_size.height, kernel_size.width) == 1) {
+      321             			return nnp_convolution_algorithm_direct;
+      322             		} else if (kernel_size.height == 3 && kernel_size.width == 3) {
+      323             			return nnp_convolution_algorithm_winograd;
+      324             		}
+      325             	}
+      326             
+      327             	/* Fall-back algorithm */
+      328             	return nnp_convolution_algorithm_im2col;
+      329             
+      330             }
+      331             
+      332             int main(int argc, char* argv[]){
+      333                 srand((unsigned)time(NULL)); 
+      334             
+      335             	struct options options = parse_options(argc, argv);
+      336             
+      337             	const size_t input_channels = options.input_channels;
+      338             	const size_t output_channels = options.output_channels;
+      339             	const struct nnp_padding input_padding = { options.input_padding, options.input_padding, options.input_padding, options.input_padding };
+      340             //	const struct nnp_size input_size = options.input_size;
+      341             	const struct nnp_size input_size = {options.input_size.height, options.input_size.width};
+      342             	const struct nnp_size kernel_size = options.kernel_size;
+      343             	const struct nnp_size output_subsampling = options.output_subsampling;
+      344             	const struct nnp_size output_size = {
+      345             		.width = (input_padding.left + input_size.width + input_padding.right - kernel_size.width) / output_subsampling.width + 1,
+      346             		.height = (input_padding.top + input_size.height + input_padding.bottom - kernel_size.height) / output_subsampling.height + 1
+      347             	};
+      348             
+      349             	printf("Input channels: %zu\n", input_channels);
+      350             	printf("Output channels: %zu\n", output_channels);
+      351             	printf("Input: %zux%zu with implicit padding %zu\n", input_size.height, input_size.width, options.input_padding);
+      352             	printf("Kernel: %zux%zu\n", kernel_size.height, kernel_size.width);
+      353             	printf("Subsampling: %zux%zu\n", output_subsampling.height, output_subsampling.width);
+      354             
+      355                 float* test_input  = (float *) malloc(sizeof(float) * input_size.height  * input_size.width  * input_channels);
+      356                 float* test_kernel = (float *) malloc(sizeof(float) * kernel_size.height * kernel_size.width * input_channels * output_channels);
+      357    i            fillTestInput(test_input, input_channels, input_size);
+      358                 fillTestKernel(test_kernel, input_channels, output_channels, kernel_size);
+      359             
+      360             	// ConvNaiveLayer conv_reference(test_input, test_kernel, NULL, NULL, input_channels, input_size.height, input_size.width, output_channels);
+      361                 // conv_reference.Forward();
+      362             
+      363             	ConvLayer* conv_test;
+      364             
+      365             	if (options.algorithm == nnp_convolution_algorithm_auto)
+      366             		options.algorithm = select_algorithm(kernel_size, output_subsampling, output_size);
+      367             
+      368             	switch (options.algorithm) {
+      369             		case nnp_convolution_algorithm_direct: {
+      370             
+      371             		} break;
+      372             
+      373             		case nnp_convolution_algorithm_im2col: {
+      374             			// conv_test = new ConvIm2colLayer(test_input, test_kernel, NULL, conv_reference.output_data,
+      375             			// 	 							input_channels, input_size.height, input_size.width, output_channels,
+      376             			// 								kernel_size.height, kernel_size.width, output_subsampling.height, output_subsampling.width,
+      377             			// 								input_padding.left, input_padding.right, input_padding.top, input_padding.bottom,
+      378             			// 								1, false,
+      379             			// 								options.threads, options.iterations);
+      380    i        			ConvIm2colLayer conv(test_input, test_kernel, NULL, NULL,
+      381             								input_channels, input_size.height, input_size.width, output_channels,
+      382             								kernel_size.height, kernel_size.width, output_subsampling.height, output_subsampling.width,
+      383             								input_padding.left, input_padding.right, input_padding.top, input_padding.bottom,
+      384             								1, false,
+      385             								options.threads, options.iterations);	
+      386             
+      387             			if (options.tuning_strategy != nnp_convolution_tuning_strategy_no_tuning)	
+      388             				conv.Tuning();
+      389             			conv.Init();
+      390    i        			conv.Forward();	
+      391    i        		} break;
+      392             
+      393             		case nnp_convolution_algorithm_winograd: {
+      394             			// conv_test = new ConvWinoF63ZCLayer(test_input, test_kernel, NULL, conv_reference.output_data,
+      395             			// 								input_channels, input_size.height, input_size.width, output_channels,
+      396             			// 								kernel_size.height, kernel_size.width, output_subsampling.height, output_subsampling.width,
+      397             			// 								input_padding.left, input_padding.right, input_padding.top, input_padding.bottom,
+      398             			// 								1, false,
+      399             			// 								options.threads, options.iterations);
+      400             			// ConvWinoF63ZCLayer conv(test_input, test_kernel, NULL, conv_reference.output_data,
+      401             			// 						input_channels, input_size.height, input_size.width, output_channels,
+      402             			// 						kernel_size.height, kernel_size.width, output_subsampling.height, output_subsampling.width,
+      403             			// 						input_padding.left, input_padding.right, input_padding.top, input_padding.bottom,
+      404             			// 						1, false,
+      405             			// 						options.threads, options.iterations);
+      406             									
+      407             			// if (options.tuning_strategy != nnp_convolution_tuning_strategy_no_tuning)	
+      408             			// 	conv.Tuning();
+      409             			// conv.Init();
+      410             			// conv.Forward();
+      411             
+      412             		} break;
+      413             	}
+      414             
+      415             	// if (options.tuning_strategy != nnp_convolution_tuning_strategy_no_tuning) {
+      416             	// 	conv_test->Tuning();
+      417             	// }
+      418             	// conv_test->Init();
+      419             	// conv_test->Forward();
+      420             
+      421             	// free(conv_test);
+      422             
+      423                 return 0;
+      424             }
+Total prefetch num: 6
+Statistics information
+  Option information
+    Command line options : -c -std=c++11 -I/vol0004/ra000012/a04453/FastConv -Kfast -Kopenmp -Nlibomp -Kprefetch_cache_level=all -Kprefetch_sequential=soft -Kprefetch_line=2 -Kprefetch_line_L2=10 -Kzfill=9 -Kswp -Nlst=t -o obj/ConvTest.o
+    Effective options    : -g0 -mt -Qy -std=gnu++11 -x- -x=quick -O3 -Knoalias_const
+                           -Kalign_loops -Knoarray_declaration_opt -Kassume=noshortloop
+                           -Kassume=nomemory_bandwidth -Kassume=notime_saving_compilation
+                           -Kcmodel=small -Keval -Keval_noconcurrent
+                           -Knoextract_stride_store -Kfast_matmul -Knofenv_access
+                           -Kfp_contract -Kfp_relaxed -Kfsimple -Kfz -Khpctag
+                           -Kilfunc=procedure -Klargepage -Klib -Kloop_blocking
+                           -Kloop_fission -Kloop_nofission_stripmining
+                           -Kloop_fission_threshold=50 -Kloop_fusion -Kloop_interchange
+                           -Kloop_part_simd -Kloop_perfect_nest -Kloop_noversioning
+                           -Klooptype=f -Knomemalias -Kmfunc=1 -Knoocl -Komitfp -Kopenmp
+                           -Kopenmp_noassume_norecurrence
+                           -Kopenmp_nocollapse_except_innermost
+                           -Kopenmp_loop_variable=private -Kopenmp_noordered_reduction
+                           -Knoopenmp_simd -Knooptlib_string -Knooptmsg
+                           -Knopc_relative_literal_loads -Knoparallel
+                           -Kparallel_nofp_precision -Knopreex -Kprefetch_cache_level=all
+                           -Kprefetch_noconditional -Kprefetch_noindirect -Kprefetch_noinfer
+                           -Kprefetch_line=2 -Kprefetch_line_L2=10
+                           -Kprefetch_sequential=soft -Kprefetch_nostride -Kprefetch_strong
+                           -Kprefetch_strong_L2 -Knopreload -Krdconv=1
+                           -Kremove_inlinefunction -Knorestp -Ksch_post_ra -Ksch_pre_ra
+                           -Ksibling_calls -Ksimd=auto -Ksimd_packed_promotion
+                           -Ksimd_reduction_product -Ksimd_reg_size=512
+                           -Ksimd_nouncounted_loop -Ksimd_use_multiple_structures
+                           -Knostrict_aliasing -Knostriping -KA64FX -KARMV8_3_A -KSVE -Kswp
+                           -Kswp_freg_rate=100 -Kswp_ireg_rate=100 -Kswp_preg_rate=100
+                           -Kswp_policy=auto -Kunroll -Knounroll_and_jam -Kzfill=9
+                           -Ncancel_overtime_compilation -Nnocoverage -Nexceptions -Nnofjcex
+                           -Nfjprof -Nnohook_func -Nnohook_time -Nlibomp -Nline -Nlst=p
+                           -Nlst=t -Nquickdbg=noheapchk -Nquickdbg=nosubchk -NRnotrap
+                           -Nnoreordered_variable_stack -Nrt_notune -Nsetvalue=noheap
+                           -Nsetvalue=nostack -Nsetvalue=noscalar -Nsetvalue=noarray
+                           -Nsetvalue=nostruct -Nsrc -Nsta
